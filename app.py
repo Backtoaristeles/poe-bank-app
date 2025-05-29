@@ -5,8 +5,12 @@ import time
 from datetime import datetime, timedelta
 import pandas as pd
 
-# 🚨 MUST BE FIRST — BEFORE ANY OTHER st.xxx CALLS
+# --- CONFIG ---
 st.set_page_config(page_title="FundBank", layout="wide")
+
+ADMIN_USERS = st.secrets.get("admin_users", ["Admin"])
+ADMIN_PASS = st.secrets.get("admin_pw", "AdminPOEconomics")
+SESSION_TIMEOUT = 20 * 60  # 20 min
 
 # --- FIREBASE INIT ---
 if not firebase_admin._apps:
@@ -14,18 +18,14 @@ if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
-st.write("✅ Firestore connected!")  # Debug line (optional, can remove)
-
-# --- CONFIG ---
-ADMIN_USERS = st.secrets.get("admin_users", ["Admin"])
-ADMIN_PASS = st.secrets.get("admin_pw", "AdminPOEconomics")
-SESSION_TIMEOUT = 20 * 60  # 20 min
 
 # --- THEME SWITCH ---
 if "theme" not in st.session_state:
     st.session_state["theme"] = "light"
+
 def toggle_theme():
     st.session_state["theme"] = "dark" if st.session_state["theme"] == "light" else "light"
+
 st.sidebar.button("🌞/🌙 Theme", on_click=toggle_theme)
 st.markdown(
     f"<style>body {{background: {'#222' if st.session_state['theme']=='dark' else '#fff'}; color: {'#eee' if st.session_state['theme']=='dark' else '#222'};}}</style>",
@@ -36,7 +36,15 @@ st.markdown(
 pages = ["🏦 User Dashboard", "🧮 What-If Calculator", "❓ FAQ/Help", "🔑 Admin Tools"]
 page = st.sidebar.radio("Navigate", pages)
 
-# --- AUTOCOMPLETE SEARCH ---
+# --- HELPERS ---
+def log_admin_action(admin_user, action, details=""):
+    db.collection("admin_logs").add({
+        "timestamp": datetime.now(),
+        "admin": admin_user,
+        "action": action,
+        "details": details
+    })
+
 def get_all_usernames():
     users_ref = db.collection("users").stream()
     names = set()
@@ -108,13 +116,13 @@ def what_if_calc():
                 qty = int(qty.strip())
             else:
                 item, qty = line, 1
-            value = qty * 10  # Simulated item value for demo
+            value = qty * 10
             st.write(f"{item}: {qty} → Value: {value}")
             total_value += value
         final_value = total_value * ((1 + growth/100) ** days)
         st.success(f"**Estimated payout after {days} days:** {final_value:,.2f}")
 
-# --- FAQ / HELP ---
+# --- FAQ ---
 def faq_tab():
     st.header("FAQ / Help")
     st.markdown("""
@@ -134,7 +142,7 @@ def faq_tab():
     Contact the admin or open an issue on our GitHub.
 
     **Security:**  
-    - No passwords required for users, just search.
+    - No passwords required for users, just search.  
     - Only admins can manage deposits.
     """)
 
@@ -146,14 +154,12 @@ def admin_tools():
         username = st.text_input("Admin Username")
         pw = st.text_input("Admin Password", type="password")
         if st.button("Login"):
-            if username in ADMIN_USERS:
+            if username in ADMIN_USERS and pw == ADMIN_PASS:
                 st.session_state.admin_logged = True
+                st.session_state.admin_user = username
                 st.session_state.admin_ts = time.time()
                 st.success(f"Admin logged in as {username}.")
-            elif pw == ADMIN_PASS:
-                st.session_state.admin_logged = True
-                st.session_state.admin_ts = time.time()
-                st.success("Admin logged in with master password.")
+                log_admin_action(username, "Login")
             else:
                 st.error("Invalid username or password.")
         return
@@ -163,82 +169,84 @@ def admin_tools():
         del st.session_state.admin_logged
         return
 
-    st.write("Welcome, admin! (session active)")
+    admin_user = st.session_state.admin_user
+    st.write(f"Welcome, **{admin_user}** (session active)")
 
-    if "last_action" in st.session_state:
-        if st.button("Undo Last Action"):
-            act = st.session_state.pop("last_action")
-            st.info(f"Undo simulated for: {act}")
-
-    st.subheader("Bulk Deposit Upload")
-    uploaded = st.file_uploader("Upload CSV with columns: username, item, qty, value, timestamp", type="csv")
-    if uploaded:
-        df = pd.read_csv(uploaded)
-        for i, row in df.iterrows():
-            user_ref = db.collection("users").document(row['username'])
-            user_ref.set({}, merge=True)
-            dep = {
-                "item": row["item"],
-                "qty": int(row["qty"]),
-                "value": float(row["value"]),
-                "timestamp": row.get("timestamp", datetime.now())
-            }
-            db.collection("users").document(row['username']).collection("deposits").add(dep)
-        st.success(f"Uploaded {len(df)} deposits!")
-        st.session_state.last_action = "bulk_upload"
-
-    st.subheader("Add Single Deposit")
+    st.subheader("Add Deposit (with Duplicate Check)")
     uname = st.text_input("Username")
     item = st.text_input("Item")
     qty = st.number_input("Qty", 1)
     value = st.number_input("Value", 0.0)
+
     if st.button("Add Deposit"):
-        dep = {
-            "item": item,
-            "qty": int(qty),
-            "value": float(value),
-            "timestamp": datetime.now()
-        }
-        db.collection("users").document(uname).set({}, merge=True)
-        db.collection("users").document(uname).collection("deposits").add(dep)
-        st.success("Deposit added.")
-        st.session_state.last_action = "add_deposit"
+        if not uname.strip():
+            st.error("Username cannot be empty.")
+            return
+        if qty <= 0:
+            st.error("Quantity must be positive.")
+            return
 
-    st.subheader("Export Deposits (CSV)")
-    exp_user = st.text_input("Filter by user (optional)")
-    exp_start = st.date_input("Start date", value=datetime.now() - timedelta(days=30))
-    exp_end = st.date_input("End date", value=datetime.now())
-    if st.button("Export"):
-        users = [exp_user] if exp_user else get_all_usernames()
-        all_deps = []
-        for u in users:
-            deps = db.collection("users").document(u).collection("deposits") \
-                .where("timestamp", ">=", exp_start) \
-                .where("timestamp", "<=", exp_end) \
-                .stream()
-            for d in deps:
-                rec = d.to_dict()
-                rec["username"] = u
-                all_deps.append(rec)
-        if all_deps:
-            df = pd.DataFrame(all_deps)
-            st.dataframe(df)
-            st.download_button("Download CSV", df.to_csv(index=False), "deposits.csv")
-        else:
-            st.info("No records found in range.")
+        try:
+            deposits = db.collection("users").document(uname).collection("deposits")
+            dupes = deposits.where("item", "==", item).where("qty", "==", qty).stream()
+            found = any(True for _ in dupes)
+            if found:
+                db.collection("pending_duplicates").add({
+                    "user": uname,
+                    "item": item,
+                    "qty": qty,
+                    "value": value,
+                    "timestamp": datetime.now(),
+                    "submitted_by": admin_user
+                })
+                st.warning("Duplicate detected! Sent to pending duplicates.")
+                log_admin_action(admin_user, "Flagged Duplicate", f"{uname} - {item} ({qty})")
+            else:
+                deposits.add({
+                    "item": item,
+                    "qty": int(qty),
+                    "value": float(value),
+                    "timestamp": datetime.now()
+                })
+                st.success("Deposit added.")
+                log_admin_action(admin_user, "Add Deposit", f"{uname} - {item} ({qty})")
+        except Exception as e:
+            st.error(f"Error adding deposit: {e}")
 
-    st.subheader("Link Aliases")
-    main_user = st.text_input("Main Username (to add alias to)")
-    alias = st.text_input("Alias to link")
-    if st.button("Link Alias"):
-        ref = db.collection("users").document(main_user)
-        doc = ref.get()
-        if doc.exists:
-            old = doc.to_dict().get("aliases", [])
-            ref.set({"aliases": old + [alias]}, merge=True)
-            st.success("Alias linked.")
-        else:
-            st.error("Main user not found.")
+    st.subheader("Pending Duplicates")
+    try:
+        pending_ref = db.collection("pending_duplicates").stream()
+        for p in pending_ref:
+            d = p.to_dict()
+            col1, col2, col3 = st.columns(3)
+            col1.write(f"{d['user']} - {d['item']} x{d['qty']}")
+            if col2.button("Approve", key=f"approve_{p.id}"):
+                db.collection("users").document(d['user']).collection("deposits").add({
+                    "item": d['item'],
+                    "qty": int(d['qty']),
+                    "value": float(d['value']),
+                    "timestamp": datetime.now()
+                })
+                db.collection("pending_duplicates").document(p.id).delete()
+                st.success(f"Approved and added: {d['user']} - {d['item']}")
+                log_admin_action(admin_user, "Approved Duplicate", f"{d['user']} - {d['item']} ({d['qty']})")
+                st.experimental_rerun()
+            if col3.button("Decline", key=f"decline_{p.id}"):
+                db.collection("pending_duplicates").document(p.id).delete()
+                st.info(f"Declined: {d['user']} - {d['item']}")
+                log_admin_action(admin_user, "Declined Duplicate", f"{d['user']} - {d['item']} ({d['qty']})")
+                st.experimental_rerun()
+    except Exception as e:
+        st.error(f"Error loading pending duplicates: {e}")
+
+    st.subheader("Admin Logs (Last 20 Actions)")
+    try:
+        logs = db.collection("admin_logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(20).stream()
+        for log in logs:
+            l = log.to_dict()
+            st.write(f"[{l['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}] **{l['admin']}** → {l['action']} → {l.get('details', '')}")
+    except Exception as e:
+        st.error(f"Error loading logs: {e}")
 
 # --- PAGE ROUTING ---
 if page == pages[0]:
@@ -252,7 +260,6 @@ if page == pages[0]:
     show_user = selected_user if selected_user else q
     if show_user:
         user_dashboard(show_user)
-        st.markdown(f"🔗 **Shareable Link:** `/user/{show_user}` (feature: soon)")
 
 elif page == pages[1]:
     what_if_calc()

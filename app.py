@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timedelta
 import pandas as pd
 
-# 🚨 MUST COME FIRST — BEFORE ANY st.xxx calls!
+# 🚨 MUST BE FIRST — BEFORE ANY OTHER st.xxx CALLS
 st.set_page_config(page_title="FundBank", layout="wide")
 
 # --- FIREBASE INIT ---
@@ -15,8 +15,6 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 st.write("✅ Firestore connected!")  # Debug line (optional, can remove)
-
-
 
 # --- CONFIG ---
 ADMIN_USERS = st.secrets.get("admin_users", ["Admin"])
@@ -35,7 +33,6 @@ st.markdown(
 )
 
 # --- PAGE NAV ---
-st.set_page_config(page_title="FundBank", layout="wide")
 pages = ["🏦 User Dashboard", "🧮 What-If Calculator", "❓ FAQ/Help", "🔑 Admin Tools"]
 page = st.sidebar.radio("Navigate", pages)
 

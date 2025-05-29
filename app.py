@@ -1,193 +1,268 @@
 import streamlit as st
-import json
 import firebase_admin
 from firebase_admin import credentials, firestore
+import json
+import time
+from datetime import datetime, timedelta
 import pandas as pd
-import hashlib
-import datetime
 
-# ===== FIREBASE INIT WITH SECRETS (SAFE METHOD) =====
-if not firebase_admin._apps:
-    # Parse the JSON string from secrets and write it as valid JSON to file
-    service_account_info = json.loads(st.secrets["firebase_json"])
-    with open("firebase_key.json", "w") as f:
-        json.dump(service_account_info, f)
-    cred = credentials.Certificate("firebase_key.json")
+# --- FIREBASE INIT ---
+if 'firebase_init' not in st.session_state:
+    cred = credentials.Certificate(json.loads(st.secrets["firebase_json"]))
     firebase_admin.initialize_app(cred)
+    st.session_state.firebase_init = True
 
 db = firestore.client()
 
-# ===== HELPER FUNCS =====
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+# --- CONFIG ---
+ADMIN_USER = "Admin"
+ADMIN_PASS = st.secrets.get("admin_pw", "AdminPOEconomics")  # put this in your secrets!
+SESSION_TIMEOUT = 20 * 60  # 20 min
 
-def check_admin(username, password):
-    doc = db.collection('users').document(username).get()
-    if doc.exists:
-        stored_hash = doc.to_dict().get('password')
-        return hash_password(password) == stored_hash
-    return False
+# --- THEME SWITCH ---
+if "theme" not in st.session_state:
+    st.session_state["theme"] = "light"
+def toggle_theme():
+    st.session_state["theme"] = "dark" if st.session_state["theme"] == "light" else "light"
+st.sidebar.button("🌞/🌙 Theme", on_click=toggle_theme)
+st.markdown(
+    f"<style>body {{background: {'#222' if st.session_state['theme']=='dark' else '#fff'}; color: {'#eee' if st.session_state['theme']=='dark' else '#222'};}}</style>",
+    unsafe_allow_html=True,
+)
 
-def log_action(admin, action, details):
-    db.collection('logs').add({
-        'admin': admin,
-        'action': action,
-        'details': details,
-        'timestamp': datetime.datetime.utcnow()
-    })
+# --- PAGE NAV ---
+st.set_page_config(page_title="FundBank", layout="wide")
+pages = ["🏦 User Dashboard", "🧮 What-If Calculator", "❓ FAQ/Help", "🔑 Admin Tools"]
+page = st.sidebar.radio("Navigate", pages)
 
-# ===== CACHED FIRESTORE FETCHES =====
-@st.cache_data(ttl=5)
-def get_items():
-    return [doc.to_dict() for doc in db.collection('items').stream()]
+# --- AUTOCOMPLETE SEARCH ---
+def get_all_usernames():
+    users_ref = db.collection("users").stream()
+    names = set()
+    for u in users_ref:
+        d = u.to_dict()
+        names.add(u.id)
+        if "aliases" in d:
+            for a in d["aliases"]:
+                names.add(a)
+    return sorted(list(names))
 
-@st.cache_data(ttl=5)
-def get_deposits():
-    return [doc.to_dict() for doc in db.collection('deposits').stream()]
-
-# ===== UI =====
-st.set_page_config(page_title="PoE Bank App", layout="wide")
-st.title("PoE Item Pool Banking App")
-
-tab1, tab2, tab3 = st.tabs(["🏦 Pool Overview", "🔎 My Deposits", "🔑 Admin Panel"])
-
-# ==== TAB 1: POOL OVERVIEW ====
-with tab1:
-    st.header("Pool Overview")
-    items = get_items()
-    deposits = get_deposits()
-    item_deposits = {item['name']: 0 for item in items}
-    for dep in deposits:
-        item_deposits[dep['item']] = item_deposits.get(dep['item'], 0) + dep['amount']
-
-    cols = st.columns(4)
-    for i, item in enumerate(items):
-        with cols[i % 4]:
-            st.subheader(item['name'])
-            target = item.get('target', 100)
-            deposited = item_deposits.get(item['name'], 0)
-            value = item.get('divine_value', 0)
-            st.progress(min(deposited / target, 1.0))
-            st.write(f"Deposited: **{deposited} / {target}**")
-            st.write(f"Divine Value per Stack: {value:.2f}")
-
-    st.markdown("---")
-    st.header("Deposit Value Calculator")
-    if items:
-        calc_item = st.selectbox("Item", [item['name'] for item in items])
-        calc_qty = st.number_input("Quantity", min_value=1, value=1)
-        calc_item_info = next((i for i in items if i['name'] == calc_item), None)
-        if calc_item_info:
-            payout = (calc_qty / calc_item_info.get('target', 100)) * calc_item_info.get('divine_value', 0)
-            st.success(f"Estimated payout: **{payout:.3f} Divines**")
+def get_user_from_name(name):
+    # Try exact username, then look up by alias
+    user_ref = db.collection("users").document(name).get()
+    if user_ref.exists:
+        return user_ref.id, user_ref.to_dict()
     else:
-        st.info("No items found. Admins need to add some items first.")
+        # Search by alias
+        users = db.collection("users").where("aliases", "array_contains", name).stream()
+        for u in users:
+            return u.id, u.to_dict()
+    return None, None
 
-# ==== TAB 2: USER DEPOSIT SEARCH ====
-with tab2:
-    st.header("Check My Deposits")
-    user_query = st.text_input("Enter your name (IGN/Discord):")
-    if user_query:
-        deposits = get_deposits()
-        items = get_items()
-        user_deposits = [d for d in deposits if d['user'].lower() == user_query.lower()]
-        if user_deposits:
-            df = pd.DataFrame(user_deposits)
-            def payout_row(row):
-                item = next((i for i in items if i['name'] == row['item']), None)
-                if not item:
-                    return 0
-                return (row['amount'] / item.get('target', 100)) * item.get('divine_value', 0)
-            df['estimated_payout'] = df.apply(payout_row, axis=1)
-            st.dataframe(df[['item', 'amount', 'estimated_payout']])
-            st.success(f"Total Estimated Payout: {df['estimated_payout'].sum():.3f} Divines")
-        else:
-            st.info("No deposits found for that name.")
+# --- USER DASHBOARD ---
+def user_dashboard(username):
+    user_id, user = get_user_from_name(username)
+    if not user:
+        st.warning("No deposits found for this user or alias.")
+        return
 
-# ==== TAB 3: ADMIN PANEL ====
-with tab3:
-    st.header("Admin Panel")
-    if "admin_logged_in" not in st.session_state:
-        st.session_state['admin_logged_in'] = False
+    st.header(f"User Dashboard: {username}")
+    st.write(f"**All deposits and payout growth for:** `{user_id}`")
+    deposits_ref = db.collection("users").document(user_id).collection("deposits").order_by("timestamp").stream()
+    deposits = []
+    for d in deposits_ref:
+        rec = d.to_dict()
+        rec["id"] = d.id
+        rec["timestamp"] = rec.get("timestamp", datetime.now())
+        deposits.append(rec)
 
-    if not st.session_state['admin_logged_in']:
-        with st.form("admin_login"):
-            username = st.text_input("Admin Username")
-            password = st.text_input("Password", type="password")
-            login = st.form_submit_button("Login")
-        if login and check_admin(username, password):
-            st.session_state['admin_logged_in'] = True
-            st.session_state['admin_user'] = username
-            st.success("Logged in!")
-        elif login:
-            st.error("Invalid credentials")
+    if not deposits:
+        st.info("No deposits yet.")
+        return
+
+    df = pd.DataFrame(deposits)
+    df["timestamp"] = pd.to_datetime(df["timestamp"].astype(str))
+    st.subheader("Deposit History")
+    st.dataframe(df[["timestamp", "item", "qty", "value"]].sort_values("timestamp", ascending=False))
+
+    # Payout Calculation (simulate simple 1%/day growth for now)
+    st.subheader("Payout/Value Growth")
+    if "growth" in user:
+        growth = user["growth"]
     else:
-        admin_user = st.session_state['admin_user']
-        st.success(f"Logged in as: {admin_user}")
+        growth = 1.01
+    df["current_value"] = df["value"] * (growth ** ((datetime.now() - df["timestamp"]).dt.days))
+    st.write(f"**Growth Rate:** {growth:.3f}x per day")
+    st.metric("Total Current Value", f"{df['current_value'].sum():,.2f}")
+    st.write("You can share this page by sending the link above! 👆")
 
-        # Add/Edit Deposit
-        with st.expander("Add/Edit Deposit"):
-            dep_user = st.text_input("User Name", key="add_dep_user")
-            dep_item = st.selectbox("Item", [item['name'] for item in get_items()], key="add_dep_item")
-            dep_amt = st.number_input("Amount", min_value=1, value=1, key="add_dep_amt")
-            if st.button("Add Deposit"):
-                db.collection('deposits').add({
-                    'user': dep_user,
-                    'item': dep_item,
-                    'amount': dep_amt,
-                    'timestamp': datetime.datetime.utcnow()
-                })
-                log_action(admin_user, "add_deposit", f"{dep_user} - {dep_item} x{dep_amt}")
-                st.success("Deposit added!")
-
-        # Edit Items/Targets/Values
-        with st.expander("Edit Items & Divine Values"):
-            items = get_items()
-            for item in items:
-                new_target = st.number_input(f"Target stack for {item['name']}", value=int(item.get('target', 100)), key=f"target_{item['name']}")
-                new_value = st.number_input(f"Divine value for {item['name']}", value=float(item.get('divine_value', 0)), key=f"value_{item['name']}")
-                if st.button(f"Update {item['name']}"):
-                    db.collection('items').document(item['name']).update({
-                        'target': new_target,
-                        'divine_value': new_value
-                    })
-                    log_action(admin_user, "edit_item", f"{item['name']} to {new_target} {new_value}")
-                    st.success(f"Updated {item['name']}.")
-
-        # Delete Deposit
-        with st.expander("Delete Deposit"):
-            del_user = st.text_input("User to delete", key="del_user")
-            del_item = st.selectbox("Item to delete", [item['name'] for item in get_items()], key="del_item")
-            if st.button("Delete Deposit"):
-                deps = db.collection('deposits').where('user', '==', del_user).where('item', '==', del_item).stream()
-                count = 0
-                for d in deps:
-                    d.reference.delete()
-                    count += 1
-                log_action(admin_user, "delete_deposit", f"{del_user} - {del_item}")
-                st.success(f"Deleted {count} deposit(s) for {del_user} - {del_item}.")
-
-        # Export CSV
-        with st.expander("Export Data"):
-            if st.button("Download Deposits CSV"):
-                df = pd.DataFrame(get_deposits())
-                st.download_button("Download CSV", df.to_csv(index=False), file_name="deposits.csv", mime="text/csv")
-            if st.button("Download Items CSV"):
-                df2 = pd.DataFrame(get_items())
-                st.download_button("Download Items CSV", df2.to_csv(index=False), file_name="items.csv", mime="text/csv")
-
-        # Admin Logs
-        with st.expander("Admin Logs"):
-            logs = [doc.to_dict() for doc in db.collection('logs').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(50).stream()]
-            if logs:
-                df = pd.DataFrame(logs)
-                st.dataframe(df)
+# --- WHAT-IF CALCULATOR ---
+def what_if_calc():
+    st.header("What-If Payout Calculator")
+    items = st.text_area("Items & Quantities (e.g. T16 Map x10, Breachstone x5):")
+    growth = st.number_input("Current Daily Growth Rate (%)", value=1.0, min_value=0.0, max_value=100.0)
+    days = st.number_input("Growth Days", value=7, min_value=1, max_value=365)
+    if st.button("Estimate Payout"):
+        lines = [x.strip() for x in items.split(",") if x.strip()]
+        total_value = 0
+        st.write("**Estimated Basket:**")
+        for line in lines:
+            if "x" in line:
+                item, qty = line.rsplit("x", 1)
+                item = item.strip()
+                qty = int(qty.strip())
             else:
-                st.info("No logs yet.")
+                item, qty = line, 1
+            value = qty * 10  # Simulate item value for demo
+            st.write(f"{item}: {qty} → Value: {value}")
+            total_value += value
+        final_value = total_value * ((1 + growth/100) ** days)
+        st.success(f"**Estimated payout after {days} days:** {final_value:,.2f}")
 
-        if st.button("Logout"):
-            st.session_state['admin_logged_in'] = False
-            st.session_state['admin_user'] = ""
-            st.success("Logged out!")
+# --- FAQ / HELP ---
+def faq_tab():
+    st.header("FAQ / Help")
+    st.markdown("""
+    **Q: How do I see my wallet/deposits?**  
+    Just type your username or IGN in the search bar!
 
-# ==== END ====
+    **Q: What if I use different names?**  
+    Ask an admin to link your aliases! You'll see all deposits together.
+
+    **Q: How is my payout calculated?**  
+    Each deposit grows by the current daily % set by admins. See details above.
+
+    **Q: Can I withdraw my items?**  
+    Not yet—withdrawals coming soon!
+
+    **Q: I found a bug/want to suggest something!**  
+    Contact the admin or open an issue on our GitHub.
+
+    **Security:**  
+    - No passwords required for users, just search.
+    - Only admins can manage deposits.
+    """)
+
+# --- ADMIN TOOLS ---
+def admin_tools():
+    st.header("Admin Tools")
+    # Login
+    if "admin_logged" not in st.session_state:
+        pw = st.text_input("Admin password", type="password")
+        if st.button("Login"):
+            if pw == ADMIN_PASS:
+                st.session_state.admin_logged = True
+                st.session_state.admin_ts = time.time()
+                st.success("Admin logged in.")
+            else:
+                st.error("Wrong password.")
+        return
+    # Session timeout
+    if time.time() - st.session_state.get("admin_ts", 0) > SESSION_TIMEOUT:
+        st.warning("Admin session timed out. Please log in again.")
+        del st.session_state.admin_logged
+        return
+    st.write("Welcome, admin! (session active)")
+
+    # Undo last admin action (simulate by storing last action in session)
+    if "last_action" in st.session_state:
+        if st.button("Undo Last Action"):
+            act = st.session_state.pop("last_action")
+            st.info(f"Undo simulated for: {act}")
+
+    # Bulk upload
+    st.subheader("Bulk Deposit Upload")
+    uploaded = st.file_uploader("Upload CSV with columns: username, item, qty, value, timestamp", type="csv")
+    if uploaded:
+        df = pd.read_csv(uploaded)
+        for i, row in df.iterrows():
+            user_ref = db.collection("users").document(row['username'])
+            user_ref.set({}, merge=True)
+            dep = {
+                "item": row["item"],
+                "qty": int(row["qty"]),
+                "value": float(row["value"]),
+                "timestamp": row.get("timestamp", datetime.now())
+            }
+            db.collection("users").document(row['username']).collection("deposits").add(dep)
+        st.success(f"Uploaded {len(df)} deposits!")
+        st.session_state.last_action = "bulk_upload"
+
+    # Manual add
+    st.subheader("Add Single Deposit")
+    uname = st.text_input("Username")
+    item = st.text_input("Item")
+    qty = st.number_input("Qty", 1)
+    value = st.number_input("Value", 0.0)
+    if st.button("Add Deposit"):
+        dep = {
+            "item": item,
+            "qty": int(qty),
+            "value": float(value),
+            "timestamp": datetime.now()
+        }
+        db.collection("users").document(uname).set({}, merge=True)
+        db.collection("users").document(uname).collection("deposits").add(dep)
+        st.success("Deposit added.")
+        st.session_state.last_action = "add_deposit"
+
+    # Advanced export
+    st.subheader("Export Deposits (CSV)")
+    exp_user = st.text_input("Filter by user (optional)")
+    exp_start = st.date_input("Start date", value=datetime.now() - timedelta(days=30))
+    exp_end = st.date_input("End date", value=datetime.now())
+    if st.button("Export"):
+        users = [exp_user] if exp_user else get_all_usernames()
+        all_deps = []
+        for u in users:
+            deps = db.collection("users").document(u).collection("deposits") \
+                .where("timestamp", ">=", exp_start) \
+                .where("timestamp", "<=", exp_end) \
+                .stream()
+            for d in deps:
+                rec = d.to_dict()
+                rec["username"] = u
+                all_deps.append(rec)
+        if all_deps:
+            df = pd.DataFrame(all_deps)
+            st.dataframe(df)
+            st.download_button("Download CSV", df.to_csv(index=False), "deposits.csv")
+        else:
+            st.info("No records found in range.")
+
+    # Link aliases
+    st.subheader("Link Aliases")
+    main_user = st.text_input("Main Username (to add alias to)")
+    alias = st.text_input("Alias to link")
+    if st.button("Link Alias"):
+        ref = db.collection("users").document(main_user)
+        doc = ref.get()
+        if doc.exists:
+            old = doc.to_dict().get("aliases", [])
+            ref.set({"aliases": old + [alias]}, merge=True)
+            st.success("Alias linked.")
+        else:
+            st.error("Main user not found.")
+
+# --- PAGE ROUTING ---
+if page == pages[0]:
+    st.title("FundBank: Public Wallet Lookup")
+    all_names = get_all_usernames()
+    q = st.text_input("Search Username or Alias", "", key="search")
+    suggestions = [n for n in all_names if q.lower() in n.lower()][:10] if q else []
+    if suggestions:
+        st.write("Suggestions: " + ", ".join(suggestions))
+    selected_user = st.selectbox("Select from suggestions", [""] + suggestions) if suggestions else ""
+    show_user = selected_user if selected_user else q
+    if show_user:
+        user_dashboard(show_user)
+        st.markdown(f"🔗 **Shareable Link:** `/user/{show_user}` (feature: soon)")
+
+elif page == pages[1]:
+    what_if_calc()
+elif page == pages[2]:
+    faq_tab()
+elif page == pages[3]:
+    admin_tools()
+
+# --- END ---

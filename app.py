@@ -1,27 +1,22 @@
 import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
-import json
 import time
 from datetime import datetime, timedelta
 import pandas as pd
 
-# --- FIREBASE INIT (Universal for Cloud & Local) ---
-firebase_secret = st.secrets["firebase_json"]
-if isinstance(firebase_secret, str):
-    firebase_secret = json.loads(firebase_secret)
+# --- FIREBASE INIT (FOR STREAMLIT CLOUD) ---
 if 'firebase_init' not in st.session_state:
-    cred = credentials.Certificate(firebase_secret)
+    cred = credentials.Certificate(st.secrets["firebase_json"])
     firebase_admin.initialize_app(cred)
     st.session_state.firebase_init = True
 
 db = firestore.client()
-st.write("Firestore connected!")  # For debugging, remove later
-
+st.write("✅ Firestore connected!")  # Debug line — remove later if you want
 
 # --- CONFIG ---
-ADMIN_USER = "Admin"
-ADMIN_PASS = st.secrets.get("admin_pw", "AdminPOEconomics")  # put this in your secrets!
+ADMIN_USERS = st.secrets.get("admin_users", ["Admin"])
+ADMIN_PASS = st.secrets.get("admin_pw", "AdminPOEconomics")
 SESSION_TIMEOUT = 20 * 60  # 20 min
 
 # --- THEME SWITCH ---
@@ -53,12 +48,10 @@ def get_all_usernames():
     return sorted(list(names))
 
 def get_user_from_name(name):
-    # Try exact username, then look up by alias
     user_ref = db.collection("users").document(name).get()
     if user_ref.exists:
         return user_ref.id, user_ref.to_dict()
     else:
-        # Search by alias
         users = db.collection("users").where("aliases", "array_contains", name).stream()
         for u in users:
             return u.id, u.to_dict()
@@ -90,12 +83,8 @@ def user_dashboard(username):
     st.subheader("Deposit History")
     st.dataframe(df[["timestamp", "item", "qty", "value"]].sort_values("timestamp", ascending=False))
 
-    # Payout Calculation (simulate simple 1%/day growth for now)
     st.subheader("Payout/Value Growth")
-    if "growth" in user:
-        growth = user["growth"]
-    else:
-        growth = 1.01
+    growth = user.get("growth", 1.01)
     df["current_value"] = df["value"] * (growth ** ((datetime.now() - df["timestamp"]).dt.days))
     st.write(f"**Growth Rate:** {growth:.3f}x per day")
     st.metric("Total Current Value", f"{df['current_value'].sum():,.2f}")
@@ -118,7 +107,7 @@ def what_if_calc():
                 qty = int(qty.strip())
             else:
                 item, qty = line, 1
-            value = qty * 10  # Simulate item value for demo
+            value = qty * 10  # Simulated item value for demo
             st.write(f"{item}: {qty} → Value: {value}")
             total_value += value
         final_value = total_value * ((1 + growth/100) ** days)
@@ -135,7 +124,7 @@ def faq_tab():
     Ask an admin to link your aliases! You'll see all deposits together.
 
     **Q: How is my payout calculated?**  
-    Each deposit grows by the current daily % set by admins. See details above.
+    Each deposit grows by the current daily % set by admins.
 
     **Q: Can I withdraw my items?**  
     Not yet—withdrawals coming soon!
@@ -151,31 +140,35 @@ def faq_tab():
 # --- ADMIN TOOLS ---
 def admin_tools():
     st.header("Admin Tools")
-    # Login
+
     if "admin_logged" not in st.session_state:
-        pw = st.text_input("Admin password", type="password")
+        username = st.text_input("Admin Username")
+        pw = st.text_input("Admin Password", type="password")
         if st.button("Login"):
-            if pw == ADMIN_PASS:
+            if username in ADMIN_USERS:
                 st.session_state.admin_logged = True
                 st.session_state.admin_ts = time.time()
-                st.success("Admin logged in.")
+                st.success(f"Admin logged in as {username}.")
+            elif pw == ADMIN_PASS:
+                st.session_state.admin_logged = True
+                st.session_state.admin_ts = time.time()
+                st.success("Admin logged in with master password.")
             else:
-                st.error("Wrong password.")
+                st.error("Invalid username or password.")
         return
-    # Session timeout
+
     if time.time() - st.session_state.get("admin_ts", 0) > SESSION_TIMEOUT:
         st.warning("Admin session timed out. Please log in again.")
         del st.session_state.admin_logged
         return
+
     st.write("Welcome, admin! (session active)")
 
-    # Undo last admin action (simulate by storing last action in session)
     if "last_action" in st.session_state:
         if st.button("Undo Last Action"):
             act = st.session_state.pop("last_action")
             st.info(f"Undo simulated for: {act}")
 
-    # Bulk upload
     st.subheader("Bulk Deposit Upload")
     uploaded = st.file_uploader("Upload CSV with columns: username, item, qty, value, timestamp", type="csv")
     if uploaded:
@@ -193,7 +186,6 @@ def admin_tools():
         st.success(f"Uploaded {len(df)} deposits!")
         st.session_state.last_action = "bulk_upload"
 
-    # Manual add
     st.subheader("Add Single Deposit")
     uname = st.text_input("Username")
     item = st.text_input("Item")
@@ -211,7 +203,6 @@ def admin_tools():
         st.success("Deposit added.")
         st.session_state.last_action = "add_deposit"
 
-    # Advanced export
     st.subheader("Export Deposits (CSV)")
     exp_user = st.text_input("Filter by user (optional)")
     exp_start = st.date_input("Start date", value=datetime.now() - timedelta(days=30))
@@ -235,7 +226,6 @@ def admin_tools():
         else:
             st.info("No records found in range.")
 
-    # Link aliases
     st.subheader("Link Aliases")
     main_user = st.text_input("Main Username (to add alias to)")
     alias = st.text_input("Alias to link")
@@ -269,5 +259,3 @@ elif page == pages[2]:
     faq_tab()
 elif page == pages[3]:
     admin_tools()
-
-# --- END ---

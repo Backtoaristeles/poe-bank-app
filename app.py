@@ -430,14 +430,13 @@ def admin_tools():
                 value = float(data.get("value", 0))
                 admin_totals[admin] = admin_totals.get(admin, 0) + value
 
-        df_admin = pd.DataFrame([
-            {"Admin": k, "Total Value Added (Divines)": v}
-            for k, v in admin_totals.items()
-        ])
-
-        if df_admin.empty:
+        if not admin_totals:
             st.info("No admin deposit totals yet.")
         else:
+            df_admin = pd.DataFrame([
+                {"Admin": k, "Total Value Added (Divines)": v}
+                for k, v in admin_totals.items()
+            ])
             st.dataframe(df_admin, use_container_width=True)
         return
 

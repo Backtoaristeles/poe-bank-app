@@ -5,13 +5,17 @@ import time
 from datetime import datetime, timedelta
 import pandas as pd
 
+# MUST BE FIRST!
+st.set_page_config(page_title="FundBank", layout="wide")
+
 # --- FIREBASE INIT (FINAL) ---
 if not firebase_admin._apps:
     cred = credentials.Certificate(dict(st.secrets["firebase_json"]))
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
-st.write("✅ Firestore connected!")  # Debug line — remove later if you want
+st.write("✅ Firestore connected!")  # Debug line — optional
+
 
 # --- CONFIG ---
 ADMIN_USERS = st.secrets.get("admin_users", ["Admin"])

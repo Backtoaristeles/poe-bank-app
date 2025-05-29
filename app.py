@@ -73,17 +73,19 @@ def admin_login():
             return False
         st.info(f"Admin logged in as {st.session_state.admin_user}")
         return True
-    uname = st.text_input("Admin Username")
-    pw = st.text_input("Admin Password", type="password")
-    if st.button("Login", key="admin_login_btn"):
-        if uname in ADMIN_USERS and pw == ADMIN_PASSWORDS[uname]:
-            st.session_state.admin_logged = True
-            st.session_state.admin_user = uname
-            st.session_state.admin_ts = time.time()
-            st.success(f"Logged in as admin: {uname}")
-            return True
-        else:
-            st.error("Invalid credentials.")
+    with st.form("admin_login_form"):
+        uname = st.text_input("Admin Username")
+        pw = st.text_input("Admin Password", type="password")
+        login_btn = st.form_submit_button("Login")
+        if login_btn:
+            if uname in ADMIN_USERS and pw == ADMIN_PASSWORDS[uname]:
+                st.session_state.admin_logged = True
+                st.session_state.admin_user = uname
+                st.session_state.admin_ts = time.time()
+                st.success(f"Logged in as admin: {uname}")
+                return True
+            else:
+                st.error("Invalid credentials.")
     return False
 
 def admin_required():
@@ -193,6 +195,10 @@ def delete_category(item_category):
             ref.delete()
     log_admin("Delete Category", f"Deleted all deposits for category {item_category}")
 
+def delete_deposit(user, dep_id):
+    db.collection("users").document(user).collection("deposits").document(dep_id).delete()
+    log_admin("Delete Deposit", f"Deposit {dep_id} for user {user}")
+
 # --- DUPLICATES ---
 def add_pending_dupe(user, item, qty, value):
     db.collection("pending_dupes").add({
@@ -236,26 +242,20 @@ def user_dashboard():
         st.write("Suggestions: " + ", ".join(suggestions))
     selected_user = st.selectbox("Select from suggestions", [""] + suggestions) if suggestions else ""
     show_user = selected_user if selected_user else q
-    if not show_user:
+    user_id, user = get_user_from_name(show_user)
+    if not user_id:
         st.info("Search for your username to view your dashboard.")
         return
-    user_id, user = get_user_from_name(show_user)
-    if not user:
-        st.warning("No deposits found for this user or alias.")
-        return
-
-    st.header(f"User Dashboard: {user_id}")
-    st.write(f"**All deposits and payout growth for:** `{user_id}`")
     deposits = get_deposits(user_id)
     if not deposits:
-        st.info("No deposits yet.")
+        st.warning("No deposits found for this user.")
         return
-
+    st.header(f"User Dashboard: {user_id}")
+    st.write(f"**All deposits and payout growth for:** `{user_id}`")
     df = pd.DataFrame(deposits)
     df["timestamp"] = pd.to_datetime(df["timestamp"].astype(str))
     st.subheader("Deposit History")
     st.dataframe(df[["timestamp", "item", "qty", "value"]].sort_values("timestamp", ascending=False))
-
     targets, divines, bank_buy_pct = get_item_settings()
     st.subheader("Payout/Value Growth")
     df["current_value"] = [
@@ -267,23 +267,22 @@ def user_dashboard():
 
 def what_if_calc():
     st.header("What-If Payout Calculator")
-    items = st.text_area("Items & Quantities (e.g. T16 Map x10, Breachstone x5):")
+    st.write("Enter the quantity for each item to estimate total payout at current bank values.")
+    item_qtys = {}
+    col1, col2 = st.columns(2)
     _, divines, _ = get_item_settings()
-    if st.button("Estimate Payout"):
-        lines = [x.strip() for x in items.split(",") if x.strip()]
+    for i, item in enumerate(ALL_ITEMS):
+        col = col1 if i % 2 == 0 else col2
+        item_qtys[item] = col.number_input(f"{item}", min_value=0, step=1, key=f"calc_{item}")
+    if st.button("Estimate Payout", key="estimate_payout_btn"):
+        st.subheader("Estimated Basket:")
         total_value = 0
-        st.write("**Estimated Basket:**")
-        for line in lines:
-            if "x" in line:
-                item, qty = line.rsplit("x", 1)
-                item = item.strip()
-                qty = int(qty.strip())
-            else:
-                item, qty = line, 1
-            value = qty * divines.get(item, 0.0)
-            st.write(f"{item}: {qty} → Value: {value:.2f} Divines")
-            total_value += value
-        st.success(f"**Estimated payout:** {total_value:,.2f} Divines")
+        for item, qty in item_qtys.items():
+            if qty > 0:
+                value = qty * divines.get(item, 0.0)
+                st.write(f"{item}: {qty} × {divines.get(item,0.0):.2f} = {value:.2f} Divines")
+                total_value += value
+        st.success(f"**Estimated total payout:** {total_value:,.2f} Divines")
 
 def faq_tab():
     st.header("FAQ / Help")
@@ -298,14 +297,8 @@ def faq_tab():
     Each deposit grows by the current divine value (set by admin).  
     You can check all item values in the sidebar (admin only).
 
-    **Q: Can I withdraw my items?**  
-    Withdrawals coming soon!
-
     **Q: Who can add deposits?**  
     Only admins can add/edit deposits, but users can see all info.
-
-    **Q: Duplicates?**  
-    If a deposit with the same item/qty/user is detected, admin must confirm before it is added.
 
     **Security:**  
     - No passwords required for users, just search.
@@ -316,15 +309,12 @@ def faq_tab():
 # --- ADMIN PANEL SPLIT TABS ---
 def admin_tools():
     st.title("Admin Tools")
-
-    # --- LOGIN ---
     if not st.session_state.admin_logged:
         admin_login()
         return
     if not admin_required():
         return
 
-    # --- Admin Tab Navigation ---
     admin_tabs = ["Deposits", "Settings"]
     st.session_state.admin_tab = st.radio("Admin Tabs", admin_tabs, key="admin_tabs")
 
@@ -355,14 +345,49 @@ def admin_tools():
                 save_item_settings(new_targets, new_divines, bank_buy_pct_new)
                 st.success("Saved!")
                 st.experimental_rerun()
+
+        st.subheader("Delete All Deposits for Category")
+        category_to_del = st.selectbox("Select Category to Delete", [""] + list(ITEM_CATEGORIES.keys()), key="del_category_sel")
+        if category_to_del:
+            st.warning(f"Are you sure you want to delete **ALL** deposits in the category **{category_to_del}**? This cannot be undone.")
+            if st.button(f"Delete ALL in '{category_to_del}'", key="del_category_btn"):
+                delete_category(category_to_del)
+                st.success(f"All deposits for '{category_to_del}' have been deleted!")
+                st.experimental_rerun()
+
+        st.subheader("Delete Individual Deposits")
+        # List user, then their deposits, with delete buttons
+        all_users = get_all_usernames()
+        user_for_delete = st.selectbox("Select User", [""] + all_users, key="del_user_sel")
+        if user_for_delete:
+            deps = get_deposits(user_for_delete)
+            if deps:
+                df = pd.DataFrame(deps)
+                df["timestamp"] = pd.to_datetime(df["timestamp"].astype(str))
+                for idx, row in df.sort_values("timestamp", ascending=False).iterrows():
+                    c = st.columns([2,2,2,2,1])
+                    c[0].write(str(row["timestamp"]))
+                    c[1].write(row["item"])
+                    c[2].write(row["qty"])
+                    c[3].write(row["value"])
+                    if c[4].button("Delete", key=f"delete_{row['id']}"):
+                        delete_deposit(user_for_delete, row["id"])
+                        st.success(f"Deleted deposit {row['qty']}x {row['item']} for {user_for_delete}")
+                        st.experimental_rerun()
+            else:
+                st.info("No deposits for that user.")
+
+        st.subheader("Admin Action Logs")
+        show_admin_logs(30)
         return
 
     # --- DEPOSITS TAB ---
     st.subheader("Add a Deposit (multiple items per user)")
     all_users = get_all_usernames()
-    user = st.selectbox("User", all_users + ["<new user>"], key="deposit_user_select")
-    if user == "<new user>":
-        user = st.text_input("Enter new username")
+    if not all_users:
+        st.info("No users found yet. Add a deposit to create the first user.")
+        return
+    user = st.selectbox("User", all_users, key="deposit_user_select")
     item_qtys = {}
     col1, col2 = st.columns(2)
     _, divines, _ = get_item_settings()
@@ -371,9 +396,10 @@ def admin_tools():
         item_qtys[item] = col.number_input(f"{item}", min_value=0, step=1, key=f"add_{item}")
     submitted = st.button("Add Deposit(s)", key="add_deposit_btn")
     if submitted and user:
+        at_least_one = False
         for item, qty in item_qtys.items():
             if qty > 0:
-                # Check for duplicate
+                at_least_one = True
                 user_doc = db.collection("users").document(user)
                 deps = user_doc.collection("deposits").where("item", "==", item).where("qty", "==", qty).stream()
                 if any(deps):
@@ -382,8 +408,9 @@ def admin_tools():
                 else:
                     add_deposit(user, item, qty, divines.get(item, 0.0))
                     st.success(f"Added: {user} - {qty}x {item}")
+        if not at_least_one:
+            st.warning("Please enter at least one deposit quantity greater than zero.")
 
-    # --- DUPLICATE PANEL ---
     st.subheader("Pending Duplicate Offers (Confirm/Decline)")
     pending_dupes = get_pending_dupes()
     if pending_dupes:
@@ -402,20 +429,6 @@ def admin_tools():
                 st.experimental_rerun()
     else:
         st.info("No pending duplicates.")
-
-    # --- DELETE BY CATEGORY ---
-    st.subheader("Delete All Deposits for Category")
-    category_to_del = st.selectbox("Select Category to Delete", [""] + list(ITEM_CATEGORIES.keys()))
-    if category_to_del:
-        st.warning(f"Are you sure you want to delete **ALL** deposits in the category **{category_to_del}**? This cannot be undone.")
-        if st.button(f"Delete ALL in '{category_to_del}'", key="del_category_btn"):
-            delete_category(category_to_del)
-            st.success(f"All deposits for '{category_to_del}' have been deleted!")
-            st.experimental_rerun()
-
-    # --- ADMIN LOGS ---
-    st.subheader("Admin Action Logs")
-    show_admin_logs(30)
 
 # --- MAIN ROUTER ---
 pages = ["🏦 User Dashboard", "🧮 What-If Calculator", "❓ FAQ/Help", "🔑 Admin Tools"]

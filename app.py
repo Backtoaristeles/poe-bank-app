@@ -59,10 +59,14 @@ def get_item_color(item): return ITEM_COLORS.get(item, "#FFF")
 DEFAULT_BANK_BUY_PCT = 80
 
 # --- SESSION STATE ---
-if "admin_logged" not in st.session_state: st.session_state.admin_logged = False
-if "admin_user" not in st.session_state: st.session_state.admin_user = ""
-if "admin_ts" not in st.session_state: st.session_state.admin_ts = 0
-if "admin_tab" not in st.session_state: st.session_state.admin_tab = "Deposits"
+for k, v in {
+    "admin_logged": False,
+    "admin_user": "",
+    "admin_ts": 0,
+    "admin_tab": "Deposits"
+}.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 # --- ADMIN LOGIN ---
 def admin_login():
@@ -84,7 +88,7 @@ def admin_login():
             st.session_state.admin_user = uname
             st.session_state.admin_ts = time.time()
             st.success(f"Logged in as admin: {uname}")
-            st.rerun()  # Instantly rerun after login
+            st.experimental_rerun()
             return
         else:
             st.error("Invalid credentials.")
@@ -103,141 +107,219 @@ def admin_required():
 
 # --- ADMIN LOGGING ---
 def log_admin(action, details=""):
-    db.collection("admin_logs").add({
-        "timestamp": datetime.utcnow(),
-        "admin_user": st.session_state.get("admin_user", "unknown"),
-        "action": action,
-        "details": details
-    })
+    try:
+        db.collection("admin_logs").add({
+            "timestamp": datetime.utcnow(),
+            "admin_user": st.session_state.get("admin_user", "unknown"),
+            "action": action,
+            "details": details
+        })
+    except Exception as e:
+        st.error(f"Logging failed: {e}")
 
 def show_admin_logs(n=20):
-    logs_ref = db.collection("admin_logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(n).stream()
-    logs = [{
-        "Timestamp": l.to_dict().get("timestamp"),
-        "Admin": l.to_dict().get("admin_user"),
-        "Action": l.to_dict().get("action"),
-        "Details": l.to_dict().get("details"),
-    } for l in logs_ref]
-    if logs:
-        df = pd.DataFrame(logs)
-        st.dataframe(df)
-    else:
-        st.info("No admin logs yet.")
+    try:
+        logs_ref = db.collection("admin_logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(n).stream()
+        logs = [{
+            "Timestamp": l.to_dict().get("timestamp"),
+            "Admin": l.to_dict().get("admin_user"),
+            "Action": l.to_dict().get("action"),
+            "Details": l.to_dict().get("details"),
+        } for l in logs_ref]
+        if logs:
+            df = pd.DataFrame(logs)
+            st.dataframe(df)
+        else:
+            st.info("No admin logs yet.")
+    except Exception as e:
+        st.error(f"Could not load logs: {e}")
 
 # --- ITEM SETTINGS ---
 def get_item_settings():
-    settings_doc = db.collection("meta").document("item_settings").get()
-    if settings_doc.exists:
-        data = settings_doc.to_dict()
-        return (
-            data.get("targets", {item: 100 for item in ALL_ITEMS}),
-            data.get("divines", {item: 0.0 for item in ALL_ITEMS}),
-            data.get("bank_buy_pct", DEFAULT_BANK_BUY_PCT)
-        )
-    else:
-        return ({item: 100 for item in ALL_ITEMS}, {item: 0.0 for item in ALL_ITEMS}, DEFAULT_BANK_BUY_PCT)
+    try:
+        settings_doc = db.collection("meta").document("item_settings").get()
+        if settings_doc.exists:
+            data = settings_doc.to_dict()
+            return (
+                data.get("targets", {item: 100 for item in ALL_ITEMS}),
+                data.get("divines", {item: 0.0 for item in ALL_ITEMS}),
+                data.get("bank_buy_pct", DEFAULT_BANK_BUY_PCT)
+            )
+    except Exception:
+        pass
+    return ({item: 100 for item in ALL_ITEMS}, {item: 0.0 for item in ALL_ITEMS}, DEFAULT_BANK_BUY_PCT)
 
 def save_item_settings(targets, divines, bank_buy_pct):
-    db.collection("meta").document("item_settings").set({
-        "targets": targets,
-        "divines": divines,
-        "bank_buy_pct": bank_buy_pct
-    }, merge=True)
-    log_admin("Edit Targets/Values", f"Targets: {targets}, Divines: {divines}, Bank Buy %: {bank_buy_pct}")
+    try:
+        db.collection("meta").document("item_settings").set({
+            "targets": targets,
+            "divines": divines,
+            "bank_buy_pct": bank_buy_pct
+        }, merge=True)
+        log_admin("Edit Targets/Values", f"Targets: {targets}, Divines: {divines}, Bank Buy %: {bank_buy_pct}")
+    except Exception as e:
+        st.error(f"Error saving settings: {e}")
 
 # --- USER SUGGESTION ---
 def get_all_usernames():
-    users_ref = db.collection("users").stream()
-    names = set()
-    for u in users_ref:
-        names.add(u.id)
-    return sorted(list(names))
+    try:
+        users_ref = db.collection("users").stream()
+        names = set()
+        for u in users_ref:
+            names.add(u.id)
+        return sorted(list(names))
+    except Exception:
+        return []
 
 def get_user_from_name(name):
     name = (name or "").strip()
     if not name:
         return None, None
-    user_ref = db.collection("users").document(name).get()
-    if user_ref.exists:
-        return user_ref.id, user_ref.to_dict()
-    else:
-        return None, None
+    try:
+        user_ref = db.collection("users").document(name).get()
+        if user_ref.exists:
+            return user_ref.id, user_ref.to_dict()
+    except Exception:
+        pass
+    return None, None
 
 # --- DEPOSITS ---
 def get_deposits(user_id):
     if not user_id: return []
-    deps = db.collection("users").document(user_id).collection("deposits").order_by("timestamp").stream()
-    results = []
-    for d in deps:
-        rec = d.to_dict()
-        rec["id"] = d.id
-        rec["timestamp"] = rec.get("timestamp", datetime.now())
-        results.append(rec)
-    return results
+    try:
+        deps = db.collection("users").document(user_id).collection("deposits").order_by("timestamp").stream()
+        results = []
+        for d in deps:
+            rec = d.to_dict()
+            rec["id"] = d.id
+            rec["timestamp"] = rec.get("timestamp", datetime.now())
+            results.append(rec)
+        return results
+    except Exception:
+        return []
 
 def add_deposit(user, item, qty, value, allow_duplicate=False):
-    doc_ref = db.collection("users").document(user)
-    doc_ref.set({}, merge=True)
-    deposits_ref = doc_ref.collection("deposits")
-    if not allow_duplicate:
-        existing = deposits_ref.where("item", "==", item).where("qty", "==", qty).stream()
-        for e in existing:
-            return False
-    dep = {
-        "item": item,
-        "qty": qty,
-        "value": value,
-        "timestamp": datetime.utcnow(),
-        "added_by_admin": st.session_state.get("admin_user", "unknown")
-    }
-    deposits_ref.add(dep)
-    log_admin("Deposit", f"{user}: {qty}x {item} (Value: {value})")
-    return True
+    try:
+        doc_ref = db.collection("users").document(user)
+        doc_ref.set({}, merge=True)
+        deposits_ref = doc_ref.collection("deposits")
+        if not allow_duplicate:
+            existing = deposits_ref.where("item", "==", item).where("qty", "==", qty).stream()
+            for e in existing:
+                return False
+        dep = {
+            "item": item,
+            "qty": qty,
+            "value": value,
+            "timestamp": datetime.utcnow()
+        }
+        deposits_ref.add(dep)
+        log_admin("Deposit", f"{user}: {qty}x {item} (Value: {value})")
+        return True
+    except Exception as e:
+        st.error(f"Error adding deposit: {e}")
+        return False
 
 def delete_category(item_category):
-    for item in ITEM_CATEGORIES[item_category]:
-        docs = db.collection_group("deposits").where("item", "==", item).stream()
-        for d in docs:
-            ref = d.reference
-            ref.delete()
-    log_admin("Delete Category", f"Deleted all deposits for category {item_category}")
+    try:
+        for item in ITEM_CATEGORIES[item_category]:
+            docs = db.collection_group("deposits").where("item", "==", item).stream()
+            for d in docs:
+                ref = d.reference
+                ref.delete()
+        log_admin("Delete Category", f"Deleted all deposits for category {item_category}")
+    except Exception as e:
+        st.error(f"Error deleting category: {e}")
 
 def delete_deposit_by_id(user, dep_id):
-    db.collection("users").document(user).collection("deposits").document(dep_id).delete()
-    log_admin("Delete Deposit", f"Deleted deposit {dep_id} for {user}")
+    try:
+        db.collection("users").document(user).collection("deposits").document(dep_id).delete()
+        log_admin("Delete Deposit", f"Deleted deposit {dep_id} for {user}")
+    except Exception as e:
+        st.error(f"Error deleting deposit: {e}")
 
 # --- DUPLICATES ---
 def add_pending_dupe(user, item, qty, value):
-    db.collection("pending_dupes").add({
-        "user": user,
-        "item": item,
-        "qty": qty,
-        "value": value,
-        "timestamp": datetime.utcnow(),
-        "status": "pending"
-    })
-    log_admin("Duplicate Detected", f"{user}: {qty}x {item}")
+    try:
+        db.collection("pending_dupes").add({
+            "user": user,
+            "item": item,
+            "qty": qty,
+            "value": value,
+            "timestamp": datetime.utcnow(),
+            "status": "pending"
+        })
+        log_admin("Duplicate Detected", f"{user}: {qty}x {item}")
+    except Exception as e:
+        st.error(f"Error adding pending dupe: {e}")
 
 def get_pending_dupes():
-    return [
-        {**doc.to_dict(), "id": doc.id}
-        for doc in db.collection("pending_dupes").where("status", "==", "pending").stream()
-    ]
+    try:
+        return [
+            {**doc.to_dict(), "id": doc.id}
+            for doc in db.collection("pending_dupes").where("status", "==", "pending").stream()
+        ]
+    except Exception:
+        return []
 
 def confirm_dupe(dupe_id):
-    dupe_doc = db.collection("pending_dupes").document(dupe_id).get()
-    if dupe_doc.exists:
-        d = dupe_doc.to_dict()
-        add_deposit(d["user"], d["item"], d["qty"], d["value"], allow_duplicate=True)
-        db.collection("pending_dupes").document(dupe_id).update({"status": "approved"})
-        log_admin("Dupe Approved", f"{d['user']}: {d['qty']}x {d['item']}")
+    try:
+        dupe_doc = db.collection("pending_dupes").document(dupe_id).get()
+        if dupe_doc.exists:
+            d = dupe_doc.to_dict()
+            add_deposit(d["user"], d["item"], d["qty"], d["value"], allow_duplicate=True)
+            db.collection("pending_dupes").document(dupe_id).update({"status": "approved"})
+            log_admin("Dupe Approved", f"{d['user']}: {d['qty']}x {d['item']}")
+    except Exception as e:
+        st.error(f"Error confirming dupe: {e}")
 
 def decline_dupe(dupe_id):
-    dupe_doc = db.collection("pending_dupes").document(dupe_id).get()
-    if dupe_doc.exists:
-        d = dupe_doc.to_dict()
-        db.collection("pending_dupes").document(dupe_id).update({"status": "declined"})
-        log_admin("Dupe Declined", f"{d['user']}: {d['qty']}x {d['item']}")
+    try:
+        dupe_doc = db.collection("pending_dupes").document(dupe_id).get()
+        if dupe_doc.exists:
+            d = dupe_doc.to_dict()
+            db.collection("pending_dupes").document(dupe_id).update({"status": "declined"})
+            log_admin("Dupe Declined", f"{d['user']}: {d['qty']}x {d['item']}")
+    except Exception as e:
+        st.error(f"Error declining dupe: {e}")
+
+# --- ADMIN DEPOSIT TRACKING ---
+def get_admin_deposit_totals():
+    try:
+        logs_ref = db.collection("admin_logs").where("action", "==", "Deposit").stream()
+        data = []
+        for l in logs_ref:
+            d = l.to_dict()
+            # Parse format "username: qtyx item (Value: X)"
+            details = d.get("details", "")
+            admin = d.get("admin_user", "")
+            if ":" in details and "x" in details:
+                name_part, rest = details.split(":", 1)
+                name = name_part.strip()
+                if "x" in rest and "(" in rest:
+                    qty_item, _ = rest.split("(", 1)
+                    if "x" in qty_item:
+                        qty_str, item = qty_item.strip().split("x", 1)
+                        try:
+                            qty = int(qty_str.strip())
+                            item = item.strip()
+                            data.append({"admin": admin, "user": name, "item": item, "qty": qty})
+                        except Exception:
+                            continue
+        return data
+    except Exception:
+        return []
+
+def reset_admin_deposit_logs():
+    try:
+        # Only removes "Deposit" logs, not other admin actions
+        logs = db.collection("admin_logs").where("action", "==", "Deposit").stream()
+        for log in logs:
+            log.reference.delete()
+        st.success("Admin deposit logs have been reset!")
+        log_admin("Reset Deposit Logs", "All Deposit logs reset")
+    except Exception as e:
+        st.error(f"Error resetting logs: {e}")
 
 # --- PAGES ---
 def user_dashboard():
@@ -270,12 +352,6 @@ def user_dashboard():
     st.subheader("Deposit History")
     st.dataframe(df[["timestamp", "item", "qty", "value"]].sort_values("timestamp", ascending=False))
 
-    # Show total deposited per item for this user:
-    st.subheader("Total Deposited per Item")
-    per_item = df.groupby("item")["qty"].sum().reset_index()
-    per_item = per_item.sort_values("qty", ascending=False)
-    st.dataframe(per_item.rename(columns={"qty": "Total Deposited"}), use_container_width=True)
-
     targets, divines, bank_buy_pct = get_item_settings()
     st.subheader("Payout/Value Growth")
     df["current_value"] = [
@@ -283,7 +359,11 @@ def user_dashboard():
         for i in range(len(df))
     ]
     st.metric("Total Current Value", f"{df['current_value'].sum():,.2f} Divines")
-    st.write("You can share this page by sending the link above! 👆")
+
+    # --- Totals per item for this user ---
+    st.subheader("Totals per Item Deposited")
+    totals = df.groupby("item")["qty"].sum().reset_index()
+    st.dataframe(totals)
 
 def what_if_calc():
     st.header("What-If Payout Calculator")
@@ -336,6 +416,7 @@ def admin_tools():
             st.session_state.admin_user = ""
             st.success("Logged out.")
             st.experimental_rerun()
+            return
     else:
         if not admin_login():
             return
@@ -344,42 +425,6 @@ def admin_tools():
 
     admin_tabs = ["Deposits", "Settings", "Admin Deposit Totals"]
     st.session_state.admin_tab = st.radio("Admin Tabs", admin_tabs, key="admin_tabs")
-
-    # --- ADMIN DEPOSIT TOTALS TAB ---
-    if st.session_state.admin_tab == "Admin Deposit Totals":
-        st.header("Total Value Deposited by Each Admin")
-        admin_totals = {}
-        st.warning("Resetting will set ALL 'value' fields to 0. This does NOT delete deposits, just resets the tracked value.")
-        if st.button("RESET ALL ADMIN DEPOSIT TOTALS"):
-            confirm = st.checkbox("Really reset all admin deposit totals?")
-            if confirm and st.button("CONFIRM Reset Now"):
-                for user_doc in db.collection("users").stream():
-                    user_id = user_doc.id
-                    deposits = db.collection("users").document(user_id).collection("deposits").stream()
-                    for dep in deposits:
-                        dep.reference.update({"value": 0})
-                st.success("All admin deposit values have been reset to 0!")
-                st.experimental_rerun()
-
-        # Aggregate all deposits across all users
-        for user_doc in db.collection("users").stream():
-            user_id = user_doc.id
-            deposits = db.collection("users").document(user_id).collection("deposits").stream()
-            for dep in deposits:
-                data = dep.to_dict()
-                admin = data.get("added_by_admin", "unknown")
-                value = float(data.get("value", 0))
-                admin_totals[admin] = admin_totals.get(admin, 0) + value
-
-        if not admin_totals:
-            st.info("No admin deposit totals yet.")
-        else:
-            df_admin = pd.DataFrame([
-                {"Admin": k, "Total Value Added (Divines)": v}
-                for k, v in admin_totals.items()
-            ])
-            st.dataframe(df_admin, use_container_width=True)
-        return
 
     # --- SETTINGS TAB ---
     if st.session_state.admin_tab == "Settings":
@@ -408,6 +453,7 @@ def admin_tools():
                 save_item_settings(new_targets, new_divines, bank_buy_pct_new)
                 st.success("Saved!")
                 st.experimental_rerun()
+                return
 
         st.subheader("Delete All Deposits for Category")
         category_to_del = st.selectbox("Select Category to Delete", [""] + list(ITEM_CATEGORIES.keys()))
@@ -417,6 +463,7 @@ def admin_tools():
                 delete_category(category_to_del)
                 st.success(f"All deposits for '{category_to_del}' have been deleted!")
                 st.experimental_rerun()
+                return
 
         st.subheader("Delete Individual Deposits")
         all_users = get_all_usernames()
@@ -435,10 +482,31 @@ def admin_tools():
                         delete_deposit_by_id(user_for_del, row["id"])
                         st.success(f"Deleted {row['qty']}x {row['item']} for {user_for_del}")
                         st.experimental_rerun()
+                        return
             else:
                 st.info("No deposits for that user.")
+
         st.subheader("Admin Action Logs")
         show_admin_logs(30)
+        return
+
+    # --- ADMIN DEPOSIT TOTALS TAB ---
+    if st.session_state.admin_tab == "Admin Deposit Totals":
+        st.header("Admin Deposit Totals (sum of deposits made by each admin)")
+        data = get_admin_deposit_totals()
+        if not data:
+            st.info("No admin deposit logs found.")
+        else:
+            df_admin = pd.DataFrame(data)
+            summary = df_admin.groupby(["admin", "item"])["qty"].sum().unstack(fill_value=0)
+            st.dataframe(summary)
+
+        st.subheader("Reset Admin Deposit Logs")
+        if st.button("Reset Admin Deposit Logs (only admin deposits; cannot be undone)", key="reset_admin_deposits"):
+            if st.confirm("Are you sure you want to reset all admin deposit logs?"):
+                reset_admin_deposit_logs()
+                st.experimental_rerun()
+                return
         return
 
     # --- DEPOSITS TAB ---
@@ -455,15 +523,17 @@ def admin_tools():
     if submitted and user:
         for item, qty in item_qtys.items():
             if qty > 0:
-                # Check for duplicate
                 user_doc = db.collection("users").document(user)
-                deps = user_doc.collection("deposits").where("item", "==", item).where("qty", "==", qty).stream()
-                if any(deps):
-                    add_pending_dupe(user, item, qty, divines.get(item, 0.0))
-                    st.warning(f"Duplicate found for {user} - {qty}x {item}. Sent to admin confirmation!")
-                else:
-                    add_deposit(user, item, qty, divines.get(item, 0.0))
-                    st.success(f"Added: {user} - {qty}x {item}")
+                try:
+                    deps = user_doc.collection("deposits").where("item", "==", item).where("qty", "==", qty).stream()
+                    if any(deps):
+                        add_pending_dupe(user, item, qty, divines.get(item, 0.0))
+                        st.warning(f"Duplicate found for {user} - {qty}x {item}. Sent to admin confirmation!")
+                    else:
+                        add_deposit(user, item, qty, divines.get(item, 0.0))
+                        st.success(f"Added: {user} - {qty}x {item}")
+                except Exception as e:
+                    st.error(f"Error checking existing deposits: {e}")
 
     st.subheader("Pending Duplicate Offers (Confirm/Decline)")
     pending_dupes = get_pending_dupes()
@@ -477,10 +547,12 @@ def admin_tools():
                 confirm_dupe(pd["id"])
                 st.success("Duplicate confirmed & added!")
                 st.experimental_rerun()
+                return
             if c[4].button("Decline", key=f"dupe_decline_{pd['id']}"):
                 decline_dupe(pd["id"])
                 st.info("Duplicate declined.")
                 st.experimental_rerun()
+                return
     else:
         st.info("No pending duplicates.")
 

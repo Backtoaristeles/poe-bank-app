@@ -73,17 +73,19 @@ def admin_login():
             return False
         st.info(f"Admin logged in as {st.session_state.admin_user}")
         return True
+
     uname = st.text_input("Admin Username")
     pw = st.text_input("Admin Password", type="password")
     login_clicked = st.button("Login", key="admin_login_btn")
+
     if login_clicked:
         if uname in ADMIN_USERS and pw == ADMIN_PASSWORDS[uname]:
             st.session_state.admin_logged = True
             st.session_state.admin_user = uname
             st.session_state.admin_ts = time.time()
             st.success(f"Logged in as admin: {uname}")
-            st.experimental_rerun()
-            return  # <- ADD THIS LINE!
+            st.rerun()  # <-- Streamlit >= 1.24: Use st.rerun()
+            return      # <- Must return immediately!
         else:
             st.error("Invalid credentials.")
     return False

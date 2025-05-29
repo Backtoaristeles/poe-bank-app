@@ -8,7 +8,7 @@ import pandas as pd
 
 # --- FIREBASE INIT ---
 if 'firebase_init' not in st.session_state:
-    cred = credentials.Certificate(json.loads(st.secrets["firebase_json"]))
+    cred = credentials.Certificate(st.secrets["firebase_json"])
     firebase_admin.initialize_app(cred)
     st.session_state.firebase_init = True
 

@@ -1,22 +1,18 @@
 import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
-import json
 import time
 from datetime import datetime, timedelta
 import pandas as pd
 
-# --- FIREBASE INIT (GUARANTEED SAFE) ---
+# --- FIREBASE INIT ---
 if 'firebase_init' not in st.session_state:
-    firebase_secret = st.secrets["firebase_json"]
-    if isinstance(firebase_secret, str):
-        firebase_secret = json.loads(firebase_secret)
-    cred = credentials.Certificate(firebase_secret)
+    cred = credentials.Certificate(dict(st.secrets["firebase_json"]))
     firebase_admin.initialize_app(cred)
     st.session_state.firebase_init = True
 
 db = firestore.client()
-st.write("✅ Firestore connected!")  # Debug line — remove later if you want
+st.write("✅ Firestore connected!")  # Debug line — remove if not needed
 
 # --- CONFIG ---
 ADMIN_USERS = st.secrets.get("admin_users", ["Admin"])

@@ -1,13 +1,17 @@
 import streamlit as st
+import json
 import firebase_admin
 from firebase_admin import credentials, firestore
 import pandas as pd
 import hashlib
 import datetime
 
-# ===== FIREBASE INIT =====
+# ===== FIREBASE INIT WITH SECRETS =====
 if not firebase_admin._apps:
-    cred = credentials.Certificate('item-bank-11b6c-firebase-adminsdk-fbsvc-0ebbd8d3c6.json')
+    # Write JSON from secrets to a file for Firebase SDK
+    with open("firebase_key.json", "w") as f:
+        f.write(st.secrets["firebase_json"])
+    cred = credentials.Certificate("firebase_key.json")
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()

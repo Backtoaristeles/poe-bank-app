@@ -84,7 +84,7 @@ def admin_login():
             st.session_state.admin_user = uname
             st.session_state.admin_ts = time.time()
             st.success(f"Logged in as admin: {uname}")
-            st.rerun()
+            st.rerun()  # Instantly rerun after login
             return
         else:
             st.error("Invalid credentials.")
@@ -188,7 +188,7 @@ def add_deposit(user, item, qty, value, allow_duplicate=False):
         "qty": qty,
         "value": value,
         "timestamp": datetime.utcnow(),
-        "added_by_admin": st.session_state.get("admin_user", "unknown"),
+        "added_by_admin": st.session_state.get("admin_user", "unknown")
     }
     deposits_ref.add(dep)
     log_admin("Deposit", f"{user}: {qty}x {item} (Value: {value})")
@@ -268,13 +268,15 @@ def user_dashboard():
     df = pd.DataFrame(deposits)
     df["timestamp"] = pd.to_datetime(df["timestamp"].astype(str))
     st.subheader("Deposit History")
-    st.dataframe(df[["timestamp", "item", "qty", "value"]].sort_values("timestamp", ascending=False), use_container_width=True)
+    st.dataframe(df[["timestamp", "item", "qty", "value"]].sort_values("timestamp", ascending=False))
+
+    # Show total deposited per item for this user:
+    st.subheader("Total Deposited per Item")
+    per_item = df.groupby("item")["qty"].sum().reset_index()
+    per_item = per_item.sort_values("qty", ascending=False)
+    st.dataframe(per_item.rename(columns={"qty": "Total Deposited"}), use_container_width=True)
 
     targets, divines, bank_buy_pct = get_item_settings()
-    st.subheader("Total Deposited per Item")
-    df_totals = df.groupby("item")["qty"].sum().reset_index().sort_values("qty", ascending=False)
-    st.dataframe(df_totals.rename(columns={"item": "Item", "qty": "Total Deposited"}), use_container_width=True)
-
     st.subheader("Payout/Value Growth")
     df["current_value"] = [
         df.iloc[i]["qty"] * divines.get(df.iloc[i]["item"], 0.0)
@@ -343,6 +345,42 @@ def admin_tools():
     admin_tabs = ["Deposits", "Settings", "Admin Deposit Totals"]
     st.session_state.admin_tab = st.radio("Admin Tabs", admin_tabs, key="admin_tabs")
 
+    # --- ADMIN DEPOSIT TOTALS TAB ---
+    if st.session_state.admin_tab == "Admin Deposit Totals":
+        st.header("Total Value Deposited by Each Admin")
+        admin_totals = {}
+        st.warning("Resetting will set ALL 'value' fields to 0. This does NOT delete deposits, just resets the tracked value.")
+        if st.button("RESET ALL ADMIN DEPOSIT TOTALS"):
+            confirm = st.checkbox("Really reset all admin deposit totals?")
+            if confirm and st.button("CONFIRM Reset Now"):
+                for user_doc in db.collection("users").stream():
+                    user_id = user_doc.id
+                    deposits = db.collection("users").document(user_id).collection("deposits").stream()
+                    for dep in deposits:
+                        dep.reference.update({"value": 0})
+                st.success("All admin deposit values have been reset to 0!")
+                st.experimental_rerun()
+
+        # Aggregate all deposits across all users
+        for user_doc in db.collection("users").stream():
+            user_id = user_doc.id
+            deposits = db.collection("users").document(user_id).collection("deposits").stream()
+            for dep in deposits:
+                data = dep.to_dict()
+                admin = data.get("added_by_admin", "unknown")
+                value = float(data.get("value", 0))
+                admin_totals[admin] = admin_totals.get(admin, 0) + value
+
+        if not admin_totals:
+            st.info("No admin deposit totals yet.")
+        else:
+            df_admin = pd.DataFrame([
+                {"Admin": k, "Total Value Added (Divines)": v}
+                for k, v in admin_totals.items()
+            ])
+            st.dataframe(df_admin, use_container_width=True)
+        return
+
     # --- SETTINGS TAB ---
     if st.session_state.admin_tab == "Settings":
         st.subheader("Edit Per-Item Targets, Values, Bank Buy %")
@@ -401,43 +439,6 @@ def admin_tools():
                 st.info("No deposits for that user.")
         st.subheader("Admin Action Logs")
         show_admin_logs(30)
-        return
-
-    # --- ADMIN DEPOSIT TOTALS TAB ---
-    if st.session_state.admin_tab == "Admin Deposit Totals":
-        st.header("Total Value Deposited by Each Admin")
-        admin_totals = {}
-
-        st.warning("Resetting will set ALL 'value' fields to 0. This does NOT delete deposits, just resets the tracked value.")
-        if st.button("RESET ALL ADMIN DEPOSIT TOTALS"):
-            confirm = st.checkbox("Really reset all admin deposit totals?")
-            if confirm and st.button("CONFIRM Reset Now"):
-                for user_doc in db.collection("users").stream():
-                    user_id = user_doc.id
-                    deposits = db.collection("users").document(user_id).collection("deposits").stream()
-                    for dep in deposits:
-                        dep.reference.update({"value": 0})
-                st.success("All admin deposit values have been reset to 0!")
-                st.experimental_rerun()
-
-        # Aggregate all deposits across all users
-        for user_doc in db.collection("users").stream():
-            user_id = user_doc.id
-            deposits = db.collection("users").document(user_id).collection("deposits").stream()
-            for dep in deposits:
-                data = dep.to_dict()
-                admin = data.get("added_by_admin", "unknown")
-                value = float(data.get("value", 0))
-                admin_totals[admin] = admin_totals.get(admin, 0) + value
-
-        if not admin_totals:
-            st.info("No admin deposit totals yet.")
-        else:
-            df_admin = pd.DataFrame([
-                {"Admin": k, "Total Value Added (Divines)": v}
-                for k, v in admin_totals.items()
-            ])
-            st.dataframe(df_admin, use_container_width=True)
         return
 
     # --- DEPOSITS TAB ---

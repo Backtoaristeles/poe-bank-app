@@ -268,33 +268,20 @@ def user_dashboard():
     df = pd.DataFrame(deposits)
     df["timestamp"] = pd.to_datetime(df["timestamp"].astype(str))
     st.subheader("Deposit History")
-    st.dataframe(df[["timestamp", "item", "qty", "value"]].sort_values("timestamp", ascending=False), use_container_width=True)
-
-    # --- Per-item total for this user ---
-    st.subheader("Total Deposited Per Item (this user)")
-    per_item = df.groupby("item")["qty"].sum().reset_index().sort_values("qty", ascending=False)
-    st.dataframe(per_item, use_container_width=True)
-
-    # --- Sitewide total per item ---
-    st.subheader("Total Deposited Per Item (all users)")
-    all_totals = []
-    for item in ALL_ITEMS:
-        total_qty = 0
-        for uname in all_names:
-            deps = get_deposits(uname)
-            for d in deps:
-                if d["item"] == item:
-                    total_qty += d["qty"]
-        all_totals.append({"item": item, "total_qty": total_qty})
-    st.dataframe(pd.DataFrame(all_totals).sort_values("total_qty", ascending=False), use_container_width=True)
+    st.dataframe(df[["timestamp", "item", "qty", "value"]].sort_values("timestamp", ascending=False))
 
     targets, divines, bank_buy_pct = get_item_settings()
+    st.subheader("Total Deposited per Item")
+    total_per_item = df.groupby("item")["qty"].sum().reset_index().sort_values("qty", ascending=False)
+    st.dataframe(total_per_item.rename(columns={"qty": "Total Deposited"}), use_container_width=True)
+
     st.subheader("Payout/Value Growth")
     df["current_value"] = [
         df.iloc[i]["qty"] * divines.get(df.iloc[i]["item"], 0.0)
         for i in range(len(df))
     ]
     st.metric("Total Current Value", f"{df['current_value'].sum():,.2f} Divines")
+    st.write("You can share this page by sending the link above! 👆")
 
 def what_if_calc():
     st.header("What-If Payout Calculator")
@@ -346,7 +333,7 @@ def admin_tools():
             st.session_state.admin_logged = False
             st.session_state.admin_user = ""
             st.success("Logged out.")
-            st.rerun()
+            st.experimental_rerun()
     else:
         if not admin_login():
             return
@@ -356,52 +343,8 @@ def admin_tools():
     admin_tabs = ["Deposits", "Settings", "Admin Deposit Totals"]
     st.session_state.admin_tab = st.radio("Admin Tabs", admin_tabs, key="admin_tabs")
 
-    # --- DEPOSITS TAB ---
-    if st.session_state.admin_tab == "Deposits":
-        st.subheader("Add a Deposit (multiple items per user)")
-        all_users = get_all_usernames()
-        user = st.selectbox("User", all_users, key="deposit_user_select")
-        item_qtys = {}
-        col1, col2 = st.columns(2)
-        _, divines, _ = get_item_settings()
-        for i, item in enumerate(ALL_ITEMS):
-            col = col1 if i % 2 == 0 else col2
-            item_qtys[item] = col.number_input(f"{item}", min_value=0, step=1, key=f"add_{item}")
-        submitted = st.button("Add Deposit(s)", key="add_deposit_btn")
-        if submitted and user:
-            for item, qty in item_qtys.items():
-                if qty > 0:
-                    # Check for duplicate
-                    user_doc = db.collection("users").document(user)
-                    deps = user_doc.collection("deposits").where("item", "==", item).where("qty", "==", qty).stream()
-                    if any(deps):
-                        add_pending_dupe(user, item, qty, divines.get(item, 0.0))
-                        st.warning(f"Duplicate found for {user} - {qty}x {item}. Sent to admin confirmation!")
-                    else:
-                        add_deposit(user, item, qty, divines.get(item, 0.0))
-                        st.success(f"Added: {user} - {qty}x {item}")
-
-        st.subheader("Pending Duplicate Offers (Confirm/Decline)")
-        pending_dupes = get_pending_dupes()
-        if pending_dupes:
-            for pd in pending_dupes:
-                c = st.columns([2, 2, 2, 1, 1])
-                c[0].write(pd["user"])
-                c[1].write(pd["item"])
-                c[2].write(pd["qty"])
-                if c[3].button("Confirm", key=f"dupe_confirm_{pd['id']}"):
-                    confirm_dupe(pd["id"])
-                    st.success("Duplicate confirmed & added!")
-                    st.rerun()
-                if c[4].button("Decline", key=f"dupe_decline_{pd['id']}"):
-                    decline_dupe(pd["id"])
-                    st.info("Duplicate declined.")
-                    st.rerun()
-        else:
-            st.info("No pending duplicates.")
-
     # --- SETTINGS TAB ---
-    elif st.session_state.admin_tab == "Settings":
+    if st.session_state.admin_tab == "Settings":
         st.subheader("Edit Per-Item Targets, Values, Bank Buy %")
         targets, divines, bank_buy_pct = get_item_settings()
         with st.form("edit_targets_form"):
@@ -426,7 +369,7 @@ def admin_tools():
             if st.form_submit_button("Save All Targets & Values"):
                 save_item_settings(new_targets, new_divines, bank_buy_pct_new)
                 st.success("Saved!")
-                st.rerun()
+                st.experimental_rerun()
 
         st.subheader("Delete All Deposits for Category")
         category_to_del = st.selectbox("Select Category to Delete", [""] + list(ITEM_CATEGORIES.keys()))
@@ -435,7 +378,7 @@ def admin_tools():
             if st.button(f"Delete ALL in '{category_to_del}'", key="del_category_btn"):
                 delete_category(category_to_del)
                 st.success(f"All deposits for '{category_to_del}' have been deleted!")
-                st.rerun()
+                st.experimental_rerun()
 
         st.subheader("Delete Individual Deposits")
         all_users = get_all_usernames()
@@ -453,11 +396,12 @@ def admin_tools():
                     if c[3].button("Delete", key=f"del_{row['id']}"):
                         delete_deposit_by_id(user_for_del, row["id"])
                         st.success(f"Deleted {row['qty']}x {row['item']} for {user_for_del}")
-                        st.rerun()
+                        st.experimental_rerun()
             else:
                 st.info("No deposits for that user.")
         st.subheader("Admin Action Logs")
         show_admin_logs(30)
+        return
 
     # --- ADMIN DEPOSIT TOTALS TAB ---
     elif st.session_state.admin_tab == "Admin Deposit Totals":
@@ -486,12 +430,59 @@ def admin_tools():
                 value = float(data.get("value", 0))
                 admin_totals[admin] = admin_totals.get(admin, 0) + value
 
-        df_admin = pd.DataFrame([
-            {"Admin": k, "Total Value Added (Divines)": v}
-            for k, v in admin_totals.items()
-        ])
+        if admin_totals:
+            df_admin = pd.DataFrame([
+                {"Admin": k, "Total Value Added (Divines)": v}
+                for k, v in admin_totals.items()
+            ])
+        else:
+            df_admin = pd.DataFrame(columns=["Admin", "Total Value Added (Divines)"])
+
         st.dataframe(df_admin, use_container_width=True)
         return
+
+    # --- DEPOSITS TAB ---
+    st.subheader("Add a Deposit (multiple items per user)")
+    all_users = get_all_usernames()
+    user = st.selectbox("User", all_users, key="deposit_user_select")
+    item_qtys = {}
+    col1, col2 = st.columns(2)
+    _, divines, _ = get_item_settings()
+    for i, item in enumerate(ALL_ITEMS):
+        col = col1 if i % 2 == 0 else col2
+        item_qtys[item] = col.number_input(f"{item}", min_value=0, step=1, key=f"add_{item}")
+    submitted = st.button("Add Deposit(s)", key="add_deposit_btn")
+    if submitted and user:
+        for item, qty in item_qtys.items():
+            if qty > 0:
+                # Check for duplicate
+                user_doc = db.collection("users").document(user)
+                deps = user_doc.collection("deposits").where("item", "==", item).where("qty", "==", qty).stream()
+                if any(deps):
+                    add_pending_dupe(user, item, qty, divines.get(item, 0.0))
+                    st.warning(f"Duplicate found for {user} - {qty}x {item}. Sent to admin confirmation!")
+                else:
+                    add_deposit(user, item, qty, divines.get(item, 0.0))
+                    st.success(f"Added: {user} - {qty}x {item}")
+
+    st.subheader("Pending Duplicate Offers (Confirm/Decline)")
+    pending_dupes = get_pending_dupes()
+    if pending_dupes:
+        for pd in pending_dupes:
+            c = st.columns([2, 2, 2, 1, 1])
+            c[0].write(pd["user"])
+            c[1].write(pd["item"])
+            c[2].write(pd["qty"])
+            if c[3].button("Confirm", key=f"dupe_confirm_{pd['id']}"):
+                confirm_dupe(pd["id"])
+                st.success("Duplicate confirmed & added!")
+                st.experimental_rerun()
+            if c[4].button("Decline", key=f"dupe_decline_{pd['id']}"):
+                decline_dupe(pd["id"])
+                st.info("Duplicate declined.")
+                st.experimental_rerun()
+    else:
+        st.info("No pending duplicates.")
 
 # --- MAIN ROUTER ---
 pages = ["🏦 User Dashboard", "🧮 What-If Calculator", "❓ FAQ/Help", "🔑 Admin Tools"]

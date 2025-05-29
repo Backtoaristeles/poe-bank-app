@@ -82,11 +82,12 @@ def admin_login():
             st.session_state.admin_user = uname
             st.session_state.admin_ts = time.time()
             st.success(f"Logged in as admin: {uname}")
-            st.experimental_rerun()  # Instantly rerun after login
-            return True
+            st.experimental_rerun()
+            return  # <- ADD THIS LINE!
         else:
             st.error("Invalid credentials.")
     return False
+
 
 def admin_required():
     if not st.session_state.admin_logged:

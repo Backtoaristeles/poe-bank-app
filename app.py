@@ -277,7 +277,6 @@ def user_dashboard():
         for i in range(len(df))
     ]
     st.metric("Total Current Value", f"{df['current_value'].sum():,.2f} Divines")
-    st.write("You can share this page by sending the link above! 👆")
 
 def what_if_calc():
     st.header("What-If Payout Calculator")

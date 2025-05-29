@@ -5,14 +5,13 @@ import time
 from datetime import datetime, timedelta
 import pandas as pd
 
-# --- FIREBASE INIT ---
-if 'firebase_init' not in st.session_state:
+# --- FIREBASE INIT (FINAL) ---
+if not firebase_admin._apps:
     cred = credentials.Certificate(dict(st.secrets["firebase_json"]))
     firebase_admin.initialize_app(cred)
-    st.session_state.firebase_init = True
 
 db = firestore.client()
-st.write("✅ Firestore connected!")  # Debug line — remove if not needed
+st.write("✅ Firestore connected!")  # Debug line — remove later if you want
 
 # --- CONFIG ---
 ADMIN_USERS = st.secrets.get("admin_users", ["Admin"])

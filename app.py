@@ -405,38 +405,41 @@ def admin_tools():
         return
 
     # --- ADMIN DEPOSIT TOTALS TAB ---
-    elif st.session_state.admin_tab == "Admin Deposit Totals":
-        st.header("Total Value Deposited by Each Admin")
-        # Aggregate all deposits across all users
-        admin_totals = {}
-        for user_doc in db.collection("users").stream():
-            user_id = user_doc.id
-            deposits = db.collection("users").document(user_id).collection("deposits").stream()
-            for dep in deposits:
-                data = dep.to_dict()
-                admin = data.get("added_by_admin", "unknown")
-                value = float(data.get("value", 0))
-                admin_totals[admin] = admin_totals.get(admin, 0) + value
+elif st.session_state.admin_tab == "Admin Deposit Totals":
+    st.header("Total Value Deposited by Each Admin")
+    # Always create this dictionary
+    admin_totals = {}
 
-        df_admin = pd.DataFrame([
-            {"Admin": k, "Total Value Added (Divines)": v}
-            for k, v in admin_totals.items()
-        ])
-        st.dataframe(df_admin, use_container_width=True)
+    # ---- Reset Option (first, before showing table) ----
+    st.warning("Resetting will set ALL 'value' fields to 0. This does NOT delete deposits, just resets the tracked value.")
+    if st.button("RESET ALL ADMIN DEPOSIT TOTALS"):
+        confirm = st.checkbox("Really reset all admin deposit totals?")
+        if confirm and st.button("CONFIRM Reset Now"):
+            for user_doc in db.collection("users").stream():
+                user_id = user_doc.id
+                deposits = db.collection("users").document(user_id).collection("deposits").stream()
+                for dep in deposits:
+                    dep.reference.update({"value": 0})
+            st.success("All admin deposit values have been reset to 0!")
+            st.experimental_rerun()
 
-        # ---- Reset Option ----
-        st.warning("Resetting will set ALL 'value' fields to 0. This does NOT delete deposits, just resets the tracked value.")
-        if st.button("RESET ALL ADMIN DEPOSIT TOTALS"):
-            confirm = st.checkbox("Really reset all admin deposit totals?")
-            if confirm and st.button("CONFIRM Reset Now"):
-                for user_doc in db.collection("users").stream():
-                    user_id = user_doc.id
-                    deposits = db.collection("users").document(user_id).collection("deposits").stream()
-                    for dep in deposits:
-                        dep.reference.update({"value": 0})
-                st.success("All admin deposit values have been reset to 0!")
-                st.experimental_rerun()
-        return
+    # Aggregate all deposits across all users
+    for user_doc in db.collection("users").stream():
+        user_id = user_doc.id
+        deposits = db.collection("users").document(user_id).collection("deposits").stream()
+        for dep in deposits:
+            data = dep.to_dict()
+            admin = data.get("added_by_admin", "unknown")
+            value = float(data.get("value", 0))
+            admin_totals[admin] = admin_totals.get(admin, 0) + value
+
+    df_admin = pd.DataFrame([
+        {"Admin": k, "Total Value Added (Divines)": v}
+        for k, v in admin_totals.items()
+    ])
+    st.dataframe(df_admin, use_container_width=True)
+    return
+
 
     # --- DEPOSITS TAB ---
     st.subheader("Add a Deposit (multiple items per user)")

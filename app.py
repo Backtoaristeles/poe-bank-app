@@ -6,11 +6,12 @@ import pandas as pd
 import hashlib
 import datetime
 
-# ===== FIREBASE INIT WITH SECRETS =====
+# ===== FIREBASE INIT WITH SECRETS (SAFE METHOD) =====
 if not firebase_admin._apps:
-    # Write JSON from secrets to a file for Firebase SDK
+    # Parse the JSON string from secrets and write it as valid JSON to file
+    service_account_info = json.loads(st.secrets["firebase_json"])
     with open("firebase_key.json", "w") as f:
-        f.write(st.secrets["firebase_json"])
+        json.dump(service_account_info, f)
     cred = credentials.Certificate("firebase_key.json")
     firebase_admin.initialize_app(cred)
 

@@ -8,11 +8,9 @@ import hashlib
 
 # --- CONFIGURATION & CONSTANTS ---
 
-# App settings
 st.set_page_config(page_title="PoE Bulk Item Bank", layout="wide")
 SESSION_TIMEOUT = 20 * 60  # 20 minutes
 
-# Firestore init
 def init_firebase():
     try:
         if not firebase_admin._apps:
@@ -24,11 +22,9 @@ def init_firebase():
         st.stop()
 db = init_firebase()
 
-# Admins and password (hash recommended)
 ADMIN_USERS = list(st.secrets["admin_passwords"].keys())
 ADMIN_PASSWORDS = {user: st.secrets["admin_passwords"][user] for user in ADMIN_USERS}
 
-# Items/Categories
 ITEM_CATEGORIES = {
     "Waystones": [
         "Waystone EXP + Delirious",
@@ -50,12 +46,6 @@ ITEM_CATEGORIES = {
 }
 ALL_ITEMS = [item for sublist in ITEM_CATEGORIES.values() for item in sublist]
 
-CATEGORY_COLORS = {
-    "Waystones": "#FFD700",
-    "White Item Bases": "#FFFFFF",
-    "Tablets": "#AA66CC",
-    "Various": "#42A5F5",
-}
 ITEM_COLORS = {
     "Breach ring level 82": "#D6A4FF",
     "Stellar Amulet": "#FFD700",
@@ -76,21 +66,19 @@ def init_session_state():
         "admin_logged": False,
         "admin_user": "",
         "admin_ts": 0,
-        "admin_tab": "Deposits"
+        "rerun_flag": False
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 init_session_state()
 
-# --- UTILITY: HASH PASSWORDS ---
 def hash_pw(pw):
     return hashlib.sha256(pw.encode()).hexdigest()
 
 # --- ADMIN LOGIN ---
 def admin_login():
     if st.session_state.admin_logged:
-        # Session expiry check
         if time.time() - st.session_state.admin_ts > SESSION_TIMEOUT:
             st.session_state.admin_logged = False
             st.warning("Session expired. Please log in again.")
@@ -105,15 +93,14 @@ def admin_login():
 
     if submitted:
         if uname in ADMIN_USERS:
-            # If using hashed passwords, hash input before compare
             correct = ADMIN_PASSWORDS[uname]
             if (pw == correct) or (hash_pw(pw) == correct):
                 st.session_state.admin_logged = True
                 st.session_state.admin_user = uname
                 st.session_state.admin_ts = time.time()
                 st.success(f"Logged in as admin: {uname}")
-                st.experimental_rerun()
-                return
+                st.session_state.rerun_flag = True
+                return "logged_in"
         st.error("Invalid credentials.")
     return False
 
@@ -161,7 +148,6 @@ def show_admin_logs(n=20):
         st.error(f"Could not load logs: {e}")
 
 # --- ITEM SETTINGS ---
-@st.cache_resource(ttl=60)
 def get_item_settings():
     try:
         settings_doc = db.collection("meta").document("item_settings").get()
@@ -227,7 +213,6 @@ def get_deposits(user_id):
         for d in deps:
             rec = d.to_dict()
             rec["id"] = d.id
-            # Firestore returns google.cloud.firestore_v1._helpers.Timestamp sometimes
             rec["timestamp"] = safe_to_datetime(rec.get("timestamp", datetime.utcnow()))
             results.append(rec)
         return results
@@ -334,7 +319,6 @@ def get_admin_deposit_totals():
         data = []
         for l in logs_ref:
             d = l.to_dict()
-            # Parse format "username: qtyx item (Value: X)"
             details = d.get("details", "")
             admin = d.get("admin_user", "")
             if ":" in details and "x" in details:
@@ -392,22 +376,24 @@ def user_dashboard():
         return
 
     df = pd.DataFrame(deposits)
-    df["timestamp"] = df["timestamp"].apply(safe_to_datetime)
-    st.subheader("Deposit History")
-    st.dataframe(df[["timestamp", "item", "qty", "value"]].sort_values("timestamp", ascending=False), use_container_width=True)
+    if not df.empty and "timestamp" in df.columns:
+        df["timestamp"] = df["timestamp"].apply(safe_to_datetime)
+        st.subheader("Deposit History")
+        st.dataframe(df[["timestamp", "item", "qty", "value"]].sort_values("timestamp", ascending=False), use_container_width=True)
 
-    targets, divines, bank_buy_pct = get_item_settings()
-    st.subheader("Payout/Value Growth")
-    df["current_value"] = [
-        df.iloc[i]["qty"] * divines.get(df.iloc[i]["item"], 0.0)
-        for i in range(len(df))
-    ]
-    st.metric("Total Current Value", f"{df['current_value'].sum():,.2f} Divines")
+        targets, divines, bank_buy_pct = get_item_settings()
+        st.subheader("Payout/Value Growth")
+        df["current_value"] = [
+            df.iloc[i]["qty"] * divines.get(df.iloc[i]["item"], 0.0)
+            for i in range(len(df))
+        ]
+        st.metric("Total Current Value", f"{df['current_value'].sum():,.2f} Divines")
 
-    # --- Totals per item for this user ---
-    st.subheader("Totals per Item Deposited")
-    totals = df.groupby("item")["qty"].sum().reset_index()
-    st.dataframe(totals, use_container_width=True)
+        st.subheader("Totals per Item Deposited")
+        totals = df.groupby("item")["qty"].sum().reset_index()
+        st.dataframe(totals, use_container_width=True)
+    else:
+        st.info("No deposit data available.")
 
 def what_if_calc():
     st.header("What-If Payout Calculator")
@@ -422,7 +408,10 @@ def what_if_calc():
         st.write("**Estimated Basket:**")
         for item, qty in item_qtys.items():
             if qty > 0:
-                value = qty * divines.get(item, 0.0)
+                try:
+                    value = qty * float(divines.get(item, 0.0))
+                except Exception:
+                    value = 0
                 st.write(f"{item}: {qty} → Value: {value:.2f} Divines")
                 total_value += value
         st.success(f"**Estimated payout:** {total_value:,.2f} Divines")
@@ -450,26 +439,32 @@ def faq_tab():
     """)
 
 def admin_tools():
+    if st.session_state.rerun_flag:
+        st.session_state.rerun_flag = False
+        st.experimental_rerun()
+        return
+
     st.title("Admin Tools")
 
-    # --- LOGIN/LOGOUT ---
     if st.session_state.admin_logged:
         if st.button("Logout"):
             st.session_state.admin_logged = False
             st.session_state.admin_user = ""
             st.success("Logged out.")
-            st.experimental_rerun()
+            st.session_state.rerun_flag = True
             return
     else:
-        if not admin_login():
+        login_status = admin_login()
+        if login_status == "logged_in":
+            st.session_state.rerun_flag = True
+            return
+        if not login_status:
             return
     if not admin_required():
         return
 
-    # --- Tabs using st.tabs (Streamlit >= 1.10) ---
     tab_deposits, tab_settings, tab_admin_totals = st.tabs(["Deposits", "Settings", "Admin Deposit Totals"])
 
-    # --- SETTINGS TAB ---
     with tab_settings:
         st.subheader("Edit Per-Item Targets, Values, Bank Buy %")
         targets, divines, bank_buy_pct = get_item_settings()
@@ -495,7 +490,7 @@ def admin_tools():
             if st.form_submit_button("Save All Targets & Values"):
                 save_item_settings(new_targets, new_divines, bank_buy_pct_new)
                 st.success("Saved!")
-                st.experimental_rerun()
+                st.session_state.rerun_flag = True
                 return
 
         st.subheader("Delete All Deposits for Category")
@@ -505,7 +500,7 @@ def admin_tools():
                 if st.button(f"Delete ALL in '{category_to_del}'", key="del_category_btn"):
                     delete_category(category_to_del)
                     st.success(f"All deposits for '{category_to_del}' have been deleted!")
-                    st.experimental_rerun()
+                    st.session_state.rerun_flag = True
                     return
 
         st.subheader("Delete Individual Deposits")
@@ -515,42 +510,47 @@ def admin_tools():
             deps = get_deposits(user_for_del)
             if deps:
                 df = pd.DataFrame(deps)
-                df["timestamp"] = df["timestamp"].apply(safe_to_datetime)
-                for idx, row in df.iterrows():
-                    c = st.columns([3, 3, 2, 1])
-                    c[0].write(row["timestamp"])
-                    c[1].write(row["item"])
-                    c[2].write(row["qty"])
-                    if c[3].button("Delete", key=f"del_{row['id']}"):
-                        delete_deposit_by_id(user_for_del, row["id"])
-                        st.success(f"Deleted {row['qty']}x {row['item']} for {user_for_del}")
-                        st.experimental_rerun()
-                        return
+                if not df.empty and "timestamp" in df.columns:
+                    df["timestamp"] = df["timestamp"].apply(safe_to_datetime)
+                    for idx, row in df.iterrows():
+                        c = st.columns([3, 3, 2, 1])
+                        c[0].write(row["timestamp"])
+                        c[1].write(row["item"])
+                        c[2].write(row["qty"])
+                        if c[3].button("Delete", key=f"del_{row['id']}"):
+                            delete_deposit_by_id(user_for_del, row["id"])
+                            st.success(f"Deleted {row['qty']}x {row['item']} for {user_for_del}")
+                            st.session_state.rerun_flag = True
+                            return
             else:
                 st.info("No deposits for that user.")
 
         st.subheader("Admin Action Logs")
         show_admin_logs(30)
 
-    # --- ADMIN DEPOSIT TOTALS TAB ---
     with tab_admin_totals:
         st.header("Admin Deposit Totals (sum of deposits made by each admin)")
         data = get_admin_deposit_totals()
         if not data:
             st.info("No admin deposit logs found.")
         else:
-            df_admin = pd.DataFrame(data)
-            summary = df_admin.groupby(["admin", "item"])["qty"].sum().unstack(fill_value=0)
-            st.dataframe(summary, use_container_width=True)
+            try:
+                df_admin = pd.DataFrame(data)
+                if df_admin.empty or "admin" not in df_admin or "item" not in df_admin or "qty" not in df_admin:
+                    st.info("No deposit totals data available.")
+                else:
+                    summary = df_admin.groupby(["admin", "item"])["qty"].sum().unstack(fill_value=0)
+                    st.dataframe(summary, use_container_width=True)
+            except Exception as e:
+                st.error(f"Failed to show deposit totals: {e}")
 
         st.subheader("Reset Admin Deposit Logs")
         if st.button("Reset Admin Deposit Logs (only admin deposits; cannot be undone)", key="reset_admin_deposits"):
             if st.checkbox("Are you sure? This CANNOT be undone.", key="reset_confirm"):
                 reset_admin_deposit_logs()
-                st.experimental_rerun()
+                st.session_state.rerun_flag = True
                 return
 
-    # --- DEPOSITS TAB ---
     with tab_deposits:
         st.subheader("Add a Deposit (multiple items per user)")
         all_users = get_all_usernames()
@@ -591,12 +591,12 @@ def admin_tools():
                 if c[3].button("Confirm", key=f"dupe_confirm_{pd['id']}"):
                     confirm_dupe(pd["id"])
                     st.success("Duplicate confirmed & added!")
-                    st.experimental_rerun()
+                    st.session_state.rerun_flag = True
                     return
                 if c[4].button("Decline", key=f"dupe_decline_{pd['id']}"):
                     decline_dupe(pd["id"])
                     st.info("Duplicate declined.")
-                    st.experimental_rerun()
+                    st.session_state.rerun_flag = True
                     return
         else:
             st.info("No pending duplicates.")

@@ -61,8 +61,7 @@ def init_session_state():
     defaults = {
         "admin_logged": False,
         "admin_user": "",
-        "admin_ts": 0,
-        "just_logged_in": False
+        "admin_ts": 0
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -195,15 +194,8 @@ def user_dashboard():
         st.info("No deposit data available.")
 
 def admin_tools():
-    # --- Rerun Handler: For login only, triggers once, then disables itself ---
-    if st.session_state.get("just_logged_in", False):
-        st.session_state.just_logged_in = False
-        st.experimental_rerun()
-        return
-
     st.title("Admin Panel")
 
-    # --- Admin Login ---
     if not st.session_state.admin_logged:
         with st.form("admin_login_form"):
             uname = st.text_input("Admin Username")
@@ -216,7 +208,6 @@ def admin_tools():
                     st.session_state.admin_logged = True
                     st.session_state.admin_user = uname
                     st.session_state.admin_ts = time.time()
-                    st.session_state.just_logged_in = True
                     st.success(f"Logged in as admin: {uname}")
                     return
             st.error("Invalid credentials.")

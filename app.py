@@ -6,8 +6,7 @@ from datetime import datetime
 import time
 import hashlib
 
-# --- CONFIGURATION & CONSTANTS ---
-
+# --- CONFIGURATION ---
 st.set_page_config(page_title="PoE Bulk Item Bank", layout="wide")
 SESSION_TIMEOUT = 20 * 60
 
@@ -173,16 +172,16 @@ def delete_deposit_by_id(user, dep_id):
         st.error(f"Error deleting deposit: {e}")
 
 def delete_category(item_category):
-    # Requires index for collection group query (see Firestore console)
-    try:
-        for item in ITEM_CATEGORIES[item_category]:
+    # Requires Firestore index for collection group query
+    for item in ITEM_CATEGORIES[item_category]:
+        try:
             docs = db.collection_group("deposits").where("item", "==", item).stream()
             for d in docs:
                 ref = d.reference
                 ref.delete()
-        log_admin("Delete Category", f"Deleted all deposits for category {item_category}")
-    except Exception as e:
-        st.error(f"Error deleting category: {e}")
+        except Exception as e:
+            raise e  # let admin_tools handle error and rerun logic
+    log_admin("Delete Category", f"Deleted all deposits for category {item_category}")
 
 def add_pending_dupe(user, item, qty, value):
     try:
@@ -362,6 +361,7 @@ def faq_tab():
     """)
 
 def admin_tools():
+    # --- Rerun Handler: For login only, triggers once, then disables itself ---
     if st.session_state.get("just_logged_in", False):
         st.session_state.just_logged_in = False
         st.experimental_rerun()
@@ -369,6 +369,7 @@ def admin_tools():
 
     st.title("Admin Panel")
 
+    # --- Admin Login ---
     if not st.session_state.admin_logged:
         with st.form("admin_login_form"):
             uname = st.text_input("Admin Username")
@@ -381,12 +382,13 @@ def admin_tools():
                     st.session_state.admin_logged = True
                     st.session_state.admin_user = uname
                     st.session_state.admin_ts = time.time()
-                    st.session_state.just_logged_in = True
+                    st.session_state.just_logged_in = True  # <-- set flag only
                     st.success(f"Logged in as admin: {uname}")
                     return
             st.error("Invalid credentials.")
         return
 
+    # --- Session Timeout ---
     if time.time() - st.session_state.admin_ts > SESSION_TIMEOUT:
         st.session_state.admin_logged = False
         st.warning("Session expired. Please log in again.")
@@ -435,10 +437,17 @@ def admin_tools():
     if category_to_del:
         if st.checkbox(f"Yes, really delete all for {category_to_del}", key="del_category_confirm"):
             if st.button(f"Delete ALL in '{category_to_del}'", key="del_category_btn"):
-                delete_category(category_to_del)
-                st.success(f"All deposits for '{category_to_del}' have been deleted!")
-                st.experimental_rerun()
-                return
+                error = None
+                try:
+                    delete_category(category_to_del)
+                except Exception as e:
+                    error = str(e)
+                if error:
+                    st.error(f"Error deleting category: {error}")
+                else:
+                    st.success(f"All deposits for '{category_to_del}' have been deleted!")
+                    st.experimental_rerun()
+                    return
 
     # --- Individual Deposit Deletion ---
     st.subheader("Delete Individual Deposits")

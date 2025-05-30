@@ -4,19 +4,31 @@ from firebase_admin import credentials, firestore
 import pandas as pd
 from datetime import datetime
 import time
+import hashlib
 
-# --- FIREBASE INIT ---
+# --- CONFIGURATION & CONSTANTS ---
+
+# App settings
 st.set_page_config(page_title="PoE Bulk Item Bank", layout="wide")
-if not firebase_admin._apps:
-    cred = credentials.Certificate(dict(st.secrets["firebase_json"]))
-    firebase_admin.initialize_app(cred)
-db = firestore.client()
+SESSION_TIMEOUT = 20 * 60  # 20 minutes
 
-# --- CONFIG ---
+# Firestore init
+def init_firebase():
+    try:
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(dict(st.secrets["firebase_json"]))
+            firebase_admin.initialize_app(cred)
+        return firestore.client()
+    except Exception as e:
+        st.error(f"Firebase initialization failed: {e}")
+        st.stop()
+db = init_firebase()
+
+# Admins and password (hash recommended)
 ADMIN_USERS = list(st.secrets["admin_passwords"].keys())
-ADMIN_PASSWORDS = dict(st.secrets["admin_passwords"])
-SESSION_TIMEOUT = 20 * 60
+ADMIN_PASSWORDS = {user: st.secrets["admin_passwords"][user] for user in ADMIN_USERS}
 
+# Items/Categories
 ITEM_CATEGORIES = {
     "Waystones": [
         "Waystone EXP + Delirious",
@@ -36,7 +48,7 @@ ITEM_CATEGORIES = {
         "Logbook level 79-80"
     ]
 }
-ALL_ITEMS = sum(ITEM_CATEGORIES.values(), [])
+ALL_ITEMS = [item for sublist in ITEM_CATEGORIES.values() for item in sublist]
 
 CATEGORY_COLORS = {
     "Waystones": "#FFD700",
@@ -55,22 +67,30 @@ ITEM_COLORS = {
     "Grand Project Tablet": "#FFDCB9",
     "Logbook level 79-80": "#42A5F5",
 }
-def get_item_color(item): return ITEM_COLORS.get(item, "#FFF")
+def get_item_color(item): return ITEM_COLORS.get(item, "#F0F0F0")
 DEFAULT_BANK_BUY_PCT = 80
 
 # --- SESSION STATE ---
-for k, v in {
-    "admin_logged": False,
-    "admin_user": "",
-    "admin_ts": 0,
-    "admin_tab": "Deposits"
-}.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+def init_session_state():
+    defaults = {
+        "admin_logged": False,
+        "admin_user": "",
+        "admin_ts": 0,
+        "admin_tab": "Deposits"
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+init_session_state()
+
+# --- UTILITY: HASH PASSWORDS ---
+def hash_pw(pw):
+    return hashlib.sha256(pw.encode()).hexdigest()
 
 # --- ADMIN LOGIN ---
 def admin_login():
     if st.session_state.admin_logged:
+        # Session expiry check
         if time.time() - st.session_state.admin_ts > SESSION_TIMEOUT:
             st.session_state.admin_logged = False
             st.warning("Session expired. Please log in again.")
@@ -78,20 +98,23 @@ def admin_login():
         st.info(f"Admin logged in as {st.session_state.admin_user}")
         return True
 
-    uname = st.text_input("Admin Username")
-    pw = st.text_input("Admin Password", type="password")
-    login_clicked = st.button("Login", key="admin_login_btn")
+    with st.form("admin_login_form"):
+        uname = st.text_input("Admin Username")
+        pw = st.text_input("Admin Password", type="password")
+        submitted = st.form_submit_button("Login")
 
-    if login_clicked:
-        if uname in ADMIN_USERS and pw == ADMIN_PASSWORDS[uname]:
-            st.session_state.admin_logged = True
-            st.session_state.admin_user = uname
-            st.session_state.admin_ts = time.time()
-            st.success(f"Logged in as admin: {uname}")
-            st.experimental_rerun()
-            return
-        else:
-            st.error("Invalid credentials.")
+    if submitted:
+        if uname in ADMIN_USERS:
+            # If using hashed passwords, hash input before compare
+            correct = ADMIN_PASSWORDS[uname]
+            if (pw == correct) or (hash_pw(pw) == correct):
+                st.session_state.admin_logged = True
+                st.session_state.admin_user = uname
+                st.session_state.admin_ts = time.time()
+                st.success(f"Logged in as admin: {uname}")
+                st.experimental_rerun()
+                return
+        st.error("Invalid credentials.")
     return False
 
 def admin_required():
@@ -105,7 +128,7 @@ def admin_required():
     st.session_state.admin_ts = time.time()
     return True
 
-# --- ADMIN LOGGING ---
+# --- LOGGING ---
 def log_admin(action, details=""):
     try:
         db.collection("admin_logs").add({
@@ -120,12 +143,15 @@ def log_admin(action, details=""):
 def show_admin_logs(n=20):
     try:
         logs_ref = db.collection("admin_logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(n).stream()
-        logs = [{
-            "Timestamp": l.to_dict().get("timestamp"),
-            "Admin": l.to_dict().get("admin_user"),
-            "Action": l.to_dict().get("action"),
-            "Details": l.to_dict().get("details"),
-        } for l in logs_ref]
+        logs = []
+        for l in logs_ref:
+            d = l.to_dict()
+            logs.append({
+                "Timestamp": pd.to_datetime(str(d.get("timestamp"))),
+                "Admin": d.get("admin_user"),
+                "Action": d.get("action"),
+                "Details": d.get("details"),
+            })
         if logs:
             df = pd.DataFrame(logs)
             st.dataframe(df)
@@ -135,6 +161,7 @@ def show_admin_logs(n=20):
         st.error(f"Could not load logs: {e}")
 
 # --- ITEM SETTINGS ---
+@st.cache_resource(ttl=60)
 def get_item_settings():
     try:
         settings_doc = db.collection("meta").document("item_settings").get()
@@ -160,7 +187,7 @@ def save_item_settings(targets, divines, bank_buy_pct):
     except Exception as e:
         st.error(f"Error saving settings: {e}")
 
-# --- USER SUGGESTION ---
+# --- USERS ---
 def get_all_usernames():
     try:
         users_ref = db.collection("users").stream()
@@ -184,6 +211,14 @@ def get_user_from_name(name):
     return None, None
 
 # --- DEPOSITS ---
+def safe_to_datetime(val):
+    if isinstance(val, datetime):
+        return val
+    try:
+        return pd.to_datetime(val)
+    except Exception:
+        return pd.NaT
+
 def get_deposits(user_id):
     if not user_id: return []
     try:
@@ -192,7 +227,8 @@ def get_deposits(user_id):
         for d in deps:
             rec = d.to_dict()
             rec["id"] = d.id
-            rec["timestamp"] = rec.get("timestamp", datetime.now())
+            # Firestore returns google.cloud.firestore_v1._helpers.Timestamp sometimes
+            rec["timestamp"] = safe_to_datetime(rec.get("timestamp", datetime.utcnow()))
             results.append(rec)
         return results
     except Exception:
@@ -205,7 +241,7 @@ def add_deposit(user, item, qty, value, allow_duplicate=False):
         deposits_ref = doc_ref.collection("deposits")
         if not allow_duplicate:
             existing = deposits_ref.where("item", "==", item).where("qty", "==", qty).stream()
-            for e in existing:
+            if any(existing):
                 return False
         dep = {
             "item": item,
@@ -241,6 +277,14 @@ def delete_deposit_by_id(user, dep_id):
 # --- DUPLICATES ---
 def add_pending_dupe(user, item, qty, value):
     try:
+        existing = db.collection("pending_dupes") \
+            .where("user", "==", user) \
+            .where("item", "==", item) \
+            .where("qty", "==", qty) \
+            .where("status", "==", "pending") \
+            .stream()
+        if any(existing):
+            return
         db.collection("pending_dupes").add({
             "user": user,
             "item": item,
@@ -312,7 +356,6 @@ def get_admin_deposit_totals():
 
 def reset_admin_deposit_logs():
     try:
-        # Only removes "Deposit" logs, not other admin actions
         logs = db.collection("admin_logs").where("action", "==", "Deposit").stream()
         for log in logs:
             log.reference.delete()
@@ -322,6 +365,7 @@ def reset_admin_deposit_logs():
         st.error(f"Error resetting logs: {e}")
 
 # --- PAGES ---
+
 def user_dashboard():
     st.title("FundBank: Public Wallet Lookup")
     all_names = get_all_usernames()
@@ -348,9 +392,9 @@ def user_dashboard():
         return
 
     df = pd.DataFrame(deposits)
-    df["timestamp"] = pd.to_datetime(df["timestamp"].astype(str))
+    df["timestamp"] = df["timestamp"].apply(safe_to_datetime)
     st.subheader("Deposit History")
-    st.dataframe(df[["timestamp", "item", "qty", "value"]].sort_values("timestamp", ascending=False))
+    st.dataframe(df[["timestamp", "item", "qty", "value"]].sort_values("timestamp", ascending=False), use_container_width=True)
 
     targets, divines, bank_buy_pct = get_item_settings()
     st.subheader("Payout/Value Growth")
@@ -363,7 +407,7 @@ def user_dashboard():
     # --- Totals per item for this user ---
     st.subheader("Totals per Item Deposited")
     totals = df.groupby("item")["qty"].sum().reset_index()
-    st.dataframe(totals)
+    st.dataframe(totals, use_container_width=True)
 
 def what_if_calc():
     st.header("What-If Payout Calculator")
@@ -405,7 +449,6 @@ def faq_tab():
     - All admin actions are logged.
     """)
 
-# --- ADMIN PANEL SPLIT TABS ---
 def admin_tools():
     st.title("Admin Tools")
 
@@ -423,11 +466,11 @@ def admin_tools():
     if not admin_required():
         return
 
-    admin_tabs = ["Deposits", "Settings", "Admin Deposit Totals"]
-    st.session_state.admin_tab = st.radio("Admin Tabs", admin_tabs, key="admin_tabs")
+    # --- Tabs using st.tabs (Streamlit >= 1.10) ---
+    tab_deposits, tab_settings, tab_admin_totals = st.tabs(["Deposits", "Settings", "Admin Deposit Totals"])
 
     # --- SETTINGS TAB ---
-    if st.session_state.admin_tab == "Settings":
+    with tab_settings:
         st.subheader("Edit Per-Item Targets, Values, Bank Buy %")
         targets, divines, bank_buy_pct = get_item_settings()
         with st.form("edit_targets_form"):
@@ -458,12 +501,12 @@ def admin_tools():
         st.subheader("Delete All Deposits for Category")
         category_to_del = st.selectbox("Select Category to Delete", [""] + list(ITEM_CATEGORIES.keys()))
         if category_to_del:
-            st.warning(f"Are you sure you want to delete **ALL** deposits in the category **{category_to_del}**? This cannot be undone.")
-            if st.button(f"Delete ALL in '{category_to_del}'", key="del_category_btn"):
-                delete_category(category_to_del)
-                st.success(f"All deposits for '{category_to_del}' have been deleted!")
-                st.experimental_rerun()
-                return
+            if st.checkbox(f"Yes, really delete all for {category_to_del}", key="del_category_confirm"):
+                if st.button(f"Delete ALL in '{category_to_del}'", key="del_category_btn"):
+                    delete_category(category_to_del)
+                    st.success(f"All deposits for '{category_to_del}' have been deleted!")
+                    st.experimental_rerun()
+                    return
 
         st.subheader("Delete Individual Deposits")
         all_users = get_all_usernames()
@@ -472,7 +515,7 @@ def admin_tools():
             deps = get_deposits(user_for_del)
             if deps:
                 df = pd.DataFrame(deps)
-                df["timestamp"] = pd.to_datetime(df["timestamp"].astype(str))
+                df["timestamp"] = df["timestamp"].apply(safe_to_datetime)
                 for idx, row in df.iterrows():
                     c = st.columns([3, 3, 2, 1])
                     c[0].write(row["timestamp"])
@@ -488,10 +531,9 @@ def admin_tools():
 
         st.subheader("Admin Action Logs")
         show_admin_logs(30)
-        return
 
     # --- ADMIN DEPOSIT TOTALS TAB ---
-    if st.session_state.admin_tab == "Admin Deposit Totals":
+    with tab_admin_totals:
         st.header("Admin Deposit Totals (sum of deposits made by each admin)")
         data = get_admin_deposit_totals()
         if not data:
@@ -499,62 +541,65 @@ def admin_tools():
         else:
             df_admin = pd.DataFrame(data)
             summary = df_admin.groupby(["admin", "item"])["qty"].sum().unstack(fill_value=0)
-            st.dataframe(summary)
+            st.dataframe(summary, use_container_width=True)
 
         st.subheader("Reset Admin Deposit Logs")
         if st.button("Reset Admin Deposit Logs (only admin deposits; cannot be undone)", key="reset_admin_deposits"):
-            if st.confirm("Are you sure you want to reset all admin deposit logs?"):
+            if st.checkbox("Are you sure? This CANNOT be undone.", key="reset_confirm"):
                 reset_admin_deposit_logs()
                 st.experimental_rerun()
                 return
-        return
 
     # --- DEPOSITS TAB ---
-    st.subheader("Add a Deposit (multiple items per user)")
-    all_users = get_all_usernames()
-    user = st.selectbox("User", all_users, key="deposit_user_select")
-    item_qtys = {}
-    col1, col2 = st.columns(2)
-    _, divines, _ = get_item_settings()
-    for i, item in enumerate(ALL_ITEMS):
-        col = col1 if i % 2 == 0 else col2
-        item_qtys[item] = col.number_input(f"{item}", min_value=0, step=1, key=f"add_{item}")
-    submitted = st.button("Add Deposit(s)", key="add_deposit_btn")
-    if submitted and user:
-        for item, qty in item_qtys.items():
-            if qty > 0:
-                user_doc = db.collection("users").document(user)
-                try:
-                    deps = user_doc.collection("deposits").where("item", "==", item).where("qty", "==", qty).stream()
-                    if any(deps):
-                        add_pending_dupe(user, item, qty, divines.get(item, 0.0))
-                        st.warning(f"Duplicate found for {user} - {qty}x {item}. Sent to admin confirmation!")
-                    else:
-                        add_deposit(user, item, qty, divines.get(item, 0.0))
-                        st.success(f"Added: {user} - {qty}x {item}")
-                except Exception as e:
-                    st.error(f"Error checking existing deposits: {e}")
+    with tab_deposits:
+        st.subheader("Add a Deposit (multiple items per user)")
+        all_users = get_all_usernames()
+        user = st.selectbox("User", all_users, key="deposit_user_select")
+        item_qtys = {}
+        col1, col2 = st.columns(2)
+        _, divines, _ = get_item_settings()
+        for i, item in enumerate(ALL_ITEMS):
+            col = col1 if i % 2 == 0 else col2
+            item_qtys[item] = col.number_input(f"{item}", min_value=0, step=1, key=f"add_{item}")
+        submitted = st.button("Add Deposit(s)", key="add_deposit_btn")
+        if submitted:
+            if not user:
+                st.warning("Please select a user before adding deposits.")
+                return
+            for item, qty in item_qtys.items():
+                if qty > 0:
+                    user_doc = db.collection("users").document(user)
+                    try:
+                        deps = user_doc.collection("deposits").where("item", "==", item).where("qty", "==", qty).stream()
+                        if any(deps):
+                            add_pending_dupe(user, item, qty, divines.get(item, 0.0))
+                            st.warning(f"Duplicate found for {user} - {qty}x {item}. Sent to admin confirmation!")
+                        else:
+                            add_deposit(user, item, qty, divines.get(item, 0.0))
+                            st.success(f"Added: {user} - {qty}x {item}")
+                    except Exception as e:
+                        st.error(f"Error checking existing deposits: {e}")
 
-    st.subheader("Pending Duplicate Offers (Confirm/Decline)")
-    pending_dupes = get_pending_dupes()
-    if pending_dupes:
-        for pd in pending_dupes:
-            c = st.columns([2, 2, 2, 1, 1])
-            c[0].write(pd["user"])
-            c[1].write(pd["item"])
-            c[2].write(pd["qty"])
-            if c[3].button("Confirm", key=f"dupe_confirm_{pd['id']}"):
-                confirm_dupe(pd["id"])
-                st.success("Duplicate confirmed & added!")
-                st.experimental_rerun()
-                return
-            if c[4].button("Decline", key=f"dupe_decline_{pd['id']}"):
-                decline_dupe(pd["id"])
-                st.info("Duplicate declined.")
-                st.experimental_rerun()
-                return
-    else:
-        st.info("No pending duplicates.")
+        st.subheader("Pending Duplicate Offers (Confirm/Decline)")
+        pending_dupes = get_pending_dupes()
+        if pending_dupes:
+            for pd in pending_dupes:
+                c = st.columns([2, 2, 2, 1, 1])
+                c[0].write(pd["user"])
+                c[1].write(pd["item"])
+                c[2].write(pd["qty"])
+                if c[3].button("Confirm", key=f"dupe_confirm_{pd['id']}"):
+                    confirm_dupe(pd["id"])
+                    st.success("Duplicate confirmed & added!")
+                    st.experimental_rerun()
+                    return
+                if c[4].button("Decline", key=f"dupe_decline_{pd['id']}"):
+                    decline_dupe(pd["id"])
+                    st.info("Duplicate declined.")
+                    st.experimental_rerun()
+                    return
+        else:
+            st.info("No pending duplicates.")
 
 # --- MAIN ROUTER ---
 pages = ["🏦 User Dashboard", "🧮 What-If Calculator", "❓ FAQ/Help", "🔑 Admin Tools"]

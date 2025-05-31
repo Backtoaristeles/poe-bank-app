@@ -213,7 +213,7 @@ def delete_deposit(user, deposit_id):
         db.collection("users").document(user).collection("deposits").document(deposit_id).delete()
         log_admin("Deleted deposit", f"User: {user}, Deposit ID: {deposit_id}")
         st.success("Deposit deleted!")
-        st.experimental_rerun()
+        st.rerun()
     except Exception as e:
         st.error(f"Failed to delete deposit: {e}")
 
@@ -228,7 +228,7 @@ def get_all_deposits():
         for dep in deps:
             d = dep.to_dict()
             d["user"] = user_id
-            d["id"] = dep.id   # Make sure deposit Firestore doc ID is included!
+            d["id"] = dep.id   # Include deposit Firestore doc ID!
             all_deps.append(d)
     if not all_deps:
         return pd.DataFrame(columns=["user", "item", "qty", "timestamp", "value", "id"])
@@ -293,11 +293,10 @@ if ss('admin_logged', False):
     colB.metric("Instant Sells", f"{inst_val:.3f} Div")
     colC.metric("Combined Total", f"{combined_val:.3f} Div")
 
-    # FIX: Show message after rerun, not before!
     if st.button("⚠️ Reset My Admin Totals (no undo)"):
         reset_admin_totals(ss('admin_user'))
         st.session_state['show_reset_msg'] = f"Your admin totals have been reset. (Before reset → Normal: {norm_val:.3f} Div, Instant: {inst_val:.3f} Div)"
-        st.experimental_rerun()
+        st.rerun()
     if ss('show_reset_msg', None):
         st.success(st.session_state.pop('show_reset_msg'))
 
@@ -362,7 +361,7 @@ if ss('admin_logged', False):
         if st.form_submit_button("Save All Targets & Values"):
             save_item_settings(new_targets, new_divines, bank_buy_pct_new)
             st.success("Saved!")
-            st.experimental_rerun()
+            st.rerun()
     st.markdown("---")
 
 # --- USER DASHBOARD/OVERVIEW ---

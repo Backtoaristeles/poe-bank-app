@@ -74,7 +74,8 @@ def init_session():
         "deposit_submitted": False,
         "deposit_in_progress": False,
         "admin_last_action": 0.0,
-        "manual_refresh": False,
+        "just_logged_in": False,
+        "just_logged_out": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -86,13 +87,14 @@ def check_admin_timeout():
     if st.session_state['admin_logged']:
         now = time.time()
         last = st.session_state.get('admin_last_action', now)
-        # Reset on every interaction
-        st.session_state['admin_last_action'] = now
         if now - last > SESSION_TIMEOUT:
             st.session_state['admin_logged'] = False
             st.session_state['admin_user'] = ""
+            st.session_state['just_logged_out'] = True
             st.warning("Admin session expired. Please log in again.")
-            st.stop()
+            st.experimental_rerun()
+        else:
+            st.session_state['admin_last_action'] = now
 check_admin_timeout()
 
 # --- FIRESTORE FUNCTIONS ---
@@ -188,11 +190,10 @@ def log_admin_action(action, details):
             "action": action,
             "details": details,
         })
-    except Exception as e:
-        # logging is non-critical
-        pass
+    except Exception:
+        pass  # Logging is non-critical
 
-# --- TOP-CENTER ADMIN LOGIN BUTTON OR LOGOUT ---
+# --- LOGIN/LOGOUT FLOW (NO AWKWARD STEPS) ---
 col1, col2, col3 = st.columns([1,2,1])
 with col2:
     if not st.session_state['admin_logged']:
@@ -202,9 +203,10 @@ with col2:
         if st.button("Admin logout"):
             for key in ["admin_logged", "admin_user", "show_login", "login_failed", "admin_last_action"]:
                 st.session_state[key] = False if key != "admin_user" else ""
-            st.success("Logged out. Refresh to hide admin features.")
-            st.stop()
+            st.session_state['just_logged_out'] = True
+            st.experimental_rerun()
 
+# --- LOGIN FORM ---
 if st.session_state['show_login'] and not st.session_state['admin_logged']:
     col_spacer1, col_login, col_spacer2 = st.columns([1,2,1])
     with col_login:
@@ -219,10 +221,9 @@ if st.session_state['show_login'] and not st.session_state['admin_logged']:
                 st.session_state['admin_user'] = uname
                 st.session_state['show_login'] = False
                 st.session_state['login_failed'] = False
+                st.session_state['just_logged_in'] = True
                 st.session_state['admin_last_action'] = time.time()
-                st.success("Login successful! Click 'Refresh' or interact to show admin features.")
-                st.session_state['manual_refresh'] = True
-                st.stop()
+                st.experimental_rerun()
             else:
                 st.session_state['admin_logged'] = False
                 st.session_state['admin_user'] = ""
@@ -230,18 +231,24 @@ if st.session_state['show_login'] and not st.session_state['admin_logged']:
     if st.session_state['login_failed']:
         st.error("Incorrect username or password.")
 
+# --- POST-LOGIN, POST-LOGOUT RERUN GUARD ---
+if st.session_state.get("just_logged_in", False):
+    st.session_state["just_logged_in"] = False
+    st.experimental_rerun()
+if st.session_state.get("just_logged_out", False):
+    st.session_state["just_logged_out"] = False
+    st.experimental_rerun()
+
+# --- ADMIN MODE CAPTION ---
 if st.session_state['admin_logged']:
     st.caption(f"**Admin mode enabled: {st.session_state['admin_user']}**")
 else:
     st.caption("**Read only mode** (progress & deposit info only)")
 
-if st.session_state.get("manual_refresh", False):
-    st.button("Refresh to update", on_click=lambda: st.session_state.update({"manual_refresh": False}))
-    st.stop()
-
 # --- DATA LOADING ---
 targets, divines, bank_buy_pct = get_item_settings()
 
+# --- ADMIN SIDEBAR (ONLY IF LOGGED IN) ---
 with st.sidebar:
     st.header("Per-Item Targets & Divine Value")
     if st.session_state['admin_logged']:
@@ -282,9 +289,8 @@ with st.sidebar:
             new_divines[item] = div
         if st.button("Save Targets and Values") and changed:
             save_item_settings(new_targets, new_divines, bank_buy_pct)
-            st.success("Targets, Divine values and Bank % saved! Click 'Refresh' to update.")
-            st.session_state['manual_refresh'] = True
-            st.stop()
+            st.success("Targets, Divine values and Bank % saved!")
+            st.experimental_rerun()
     else:
         for item in ALL_ITEMS:
             st.markdown(
@@ -316,22 +322,18 @@ if st.session_state['admin_logged']:
                     if ok:
                         any_added = True
             if any_added:
-                st.success("Deposits added! Click 'Refresh' to update.")
-                st.session_state['manual_refresh'] = True
+                st.success("Deposits added!")
+                st.experimental_rerun()
             else:
                 st.info("No new deposits added.")
             st.session_state['deposit_in_progress'] = False
-            st.stop()
+            st.experimental_rerun()
         elif submitted:
             st.warning("Please enter a username.")
             st.session_state['deposit_in_progress'] = False
-    # Reset after form shows again
+
     if st.session_state['deposit_in_progress'] and not submitted:
         st.session_state['deposit_in_progress'] = False
-
-if st.session_state.get("manual_refresh", False):
-    st.button("Refresh to update", on_click=lambda: st.session_state.update({"manual_refresh": False}))
-    st.stop()
 
 st.markdown("---")
 

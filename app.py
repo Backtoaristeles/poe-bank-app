@@ -224,7 +224,6 @@ with col2:
             for key in ["admin_logged", "admin_user", "show_login", "login_failed", "admin_last_action"]:
                 st.session_state[key] = False if key != "admin_user" else ""
             st.info("Press logout again to confirm logout.")
-            st.stop()
 
 # --- ADMIN LOGIN FORM ---
 if ss('show_login', False) and not ss('admin_logged', False):
@@ -247,13 +246,11 @@ if ss('show_login', False) and not ss('admin_logged', False):
                 st.session_state['admin_last_action'] = time.time()
                 st.success("Login success! Press the login button again to confirm.")
                 log_admin("Admin Login", f"Admin {uname} logged in.")
-                st.stop()
             else:
                 st.session_state['admin_logged'] = False
                 st.session_state['admin_user'] = ""
                 st.session_state['login_failed'] = True
                 st.error("Incorrect username or password.")
-                st.stop()
 
 if ss('admin_logged', False):
     st.caption(f"**Admin mode enabled: {ss('admin_user','')}**")
@@ -449,7 +446,8 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
 
 st.markdown("---")
 
-# --- ADMIN LOGS ---
+# --- ADMIN LOGS ALWAYS SHOWN AT BOTTOM FOR ADMIN ---
 if ss('admin_logged', False):
     st.header("Admin Logs (last 30 actions)")
+    st.write("_If you see this, logs are running below. If empty, no actions logged yet!_")
     show_admin_logs(n=30)

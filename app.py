@@ -444,25 +444,26 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
 
 st.markdown("---")
 
-# --- ADMIN DANGER ZONE: DELETE CATEGORY ---
+# --- ADMIN DANGER ZONE: DELETE BY ITEM ---
 if ss('admin_logged', False):
     st.header("Admin: Danger Zone")
-    st.warning("⚠️ Danger: These buttons permanently delete ALL deposits for an entire category. There is NO undo.")
-    for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
-        if st.button(f"Delete ALL deposits in category: {cat}"):
+    st.warning("⚠️ Danger: These buttons permanently delete ALL deposits for a single item. There is NO undo.")
+    for item in ALL_ITEMS:
+        if st.button(f"Delete ALL deposits for item: {item}"):
             try:
                 num_deleted = 0
                 user_list = get_all_usernames()
                 for user in user_list:
                     deps = get_deposits(user)
                     for dep in deps:
-                        if dep.get("item") in items:
+                        if dep.get("item") == item:
                             db.collection("users").document(user).collection("deposits").document(dep["id"]).delete()
                             num_deleted += 1
-                log_admin("Delete Category", f"Deleted all deposits for category '{cat}' ({num_deleted} deleted)")
-                st.success(f"Deleted all deposits in '{cat}'. Total deleted: {num_deleted}")
+                log_admin("Delete Item", f"Deleted all deposits for item '{item}' ({num_deleted} deleted)")
+                st.success(f"Deleted all deposits for '{item}'. Total deleted: {num_deleted}")
             except Exception as e:
-                st.error(f"Error deleting deposits for {cat}: {e}")
+                st.error(f"Error deleting deposits for {item}: {e}")
+
     st.markdown("---")
 
 # --- ADMIN LOGS ALWAYS SHOWN AT BOTTOM FOR ADMIN ---

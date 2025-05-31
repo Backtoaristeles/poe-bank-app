@@ -74,8 +74,7 @@ def init_session():
         "deposit_submitted": False,
         "deposit_in_progress": False,
         "admin_last_action": 0.0,
-        "just_logged_in": False,
-        "just_logged_out": False,
+        # No rerun flags needed
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -90,9 +89,7 @@ def check_admin_timeout():
         if now - last > SESSION_TIMEOUT:
             st.session_state['admin_logged'] = False
             st.session_state['admin_user'] = ""
-            st.session_state['just_logged_out'] = True
             st.warning("Admin session expired. Please log in again.")
-            st.experimental_rerun()
         else:
             st.session_state['admin_last_action'] = now
 check_admin_timeout()
@@ -199,12 +196,12 @@ with col2:
     if not st.session_state['admin_logged']:
         if st.button("Admin login"):
             st.session_state['show_login'] = not st.session_state['show_login']
+            st.info("Press the login button again after entering your credentials to confirm login.")
     else:
         if st.button("Admin logout"):
             for key in ["admin_logged", "admin_user", "show_login", "login_failed", "admin_last_action"]:
                 st.session_state[key] = False if key != "admin_user" else ""
-            st.session_state['just_logged_out'] = True
-            st.experimental_rerun()
+            st.info("Press logout again to confirm logout.")
 
 # --- LOGIN FORM ---
 if st.session_state['show_login'] and not st.session_state['admin_logged']:
@@ -212,6 +209,7 @@ if st.session_state['show_login'] and not st.session_state['admin_logged']:
     with col_login:
         with st.form("admin_login_form"):
             st.write("**Admin Login**")
+            st.markdown("*You may need to press the login button twice after entering your credentials.*", unsafe_allow_html=True)
             uname = st.text_input("Username")
             pw = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Login")
@@ -221,7 +219,6 @@ if st.session_state['show_login'] and not st.session_state['admin_logged']:
                 st.session_state['admin_user'] = uname
                 st.session_state['show_login'] = False
                 st.session_state['login_failed'] = False
-                st.session_state['just_logged_in'] = True
                 st.session_state['admin_last_action'] = time.time()
             else:
                 st.session_state['admin_logged'] = False
@@ -229,14 +226,6 @@ if st.session_state['show_login'] and not st.session_state['admin_logged']:
                 st.session_state['login_failed'] = True
     if st.session_state['login_failed']:
         st.error("Incorrect username or password.")
-
-# --- POST-LOGIN, POST-LOGOUT RERUN GUARD ---
-if st.session_state.get("just_logged_in", False):
-    st.session_state["just_logged_in"] = False
-    st.experimental_rerun()
-if st.session_state.get("just_logged_out", False):
-    st.session_state["just_logged_out"] = False
-    st.experimental_rerun()
 
 # --- ADMIN MODE CAPTION ---
 if st.session_state['admin_logged']:
@@ -289,7 +278,6 @@ with st.sidebar:
         if st.button("Save Targets and Values") and changed:
             save_item_settings(new_targets, new_divines, bank_buy_pct)
             st.success("Targets, Divine values and Bank % saved!")
-            st.experimental_rerun()
     else:
         for item in ALL_ITEMS:
             st.markdown(
@@ -322,11 +310,9 @@ if st.session_state['admin_logged']:
                         any_added = True
             if any_added:
                 st.success("Deposits added!")
-                st.experimental_rerun()
             else:
                 st.info("No new deposits added.")
             st.session_state['deposit_in_progress'] = False
-            st.experimental_rerun()
         elif submitted:
             st.warning("Please enter a username.")
             st.session_state['deposit_in_progress'] = False

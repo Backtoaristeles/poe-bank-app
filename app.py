@@ -187,15 +187,16 @@ with col2:
     if not ss('admin_logged', False):
         if st.button("Admin login"):
             st.session_state['show_login'] = not ss('show_login', False)
-            st.info("Press login again after entering credentials to confirm.")  # <-- INFO
-            st.stop()
+            st.info("If you just enabled login, enter credentials below and press the login button in the form.")
+            # DO NOT STOP HERE!
     else:
         if st.button("Admin logout"):
             for key in ["admin_logged", "admin_user", "show_login", "login_failed", "admin_last_action"]:
                 st.session_state[key] = False if key != "admin_user" else ""
-            st.info("Press logout again to confirm logout.")  # <-- INFO
+            st.info("Press logout again to confirm logout.")
             st.stop()
 
+# --- ADMIN LOGIN FORM ---
 if ss('show_login', False) and not ss('admin_logged', False):
     col_spacer1, col_login, col_spacer2 = st.columns([1,2,1])
     with col_login:
@@ -411,3 +412,4 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
                 st.info("No deposits for this item.")
 
 st.markdown("---")
+

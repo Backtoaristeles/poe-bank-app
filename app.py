@@ -450,6 +450,56 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
 
 st.markdown("---")
 
+# --- WHAT-IF CALCULATOR ---
+st.header("🧮 What-If Payout Calculator")
+
+with st.form("what_if_calc_form"):
+    col1, col2 = st.columns(2)
+    user_inputs = {}
+    for i, item in enumerate(ALL_ITEMS):
+        col = col1 if i % 2 == 0 else col2
+        user_inputs[item] = col.number_input(
+            f"{item}",
+            min_value=0,
+            step=1,
+            key=f"whatif_{item}"
+        )
+    calc_submitted = st.form_submit_button("Estimate Payout")
+
+if calc_submitted:
+    targets, divines, bank_buy_pct = get_item_settings()  # Re-load in case admin changed
+    st.subheader("What-If Basket Breakdown")
+    total_deposit = 0.0
+    total_instant = 0.0
+    rows = []
+    for item in ALL_ITEMS:
+        qty = user_inputs.get(item, 0)
+        if qty > 0:
+            stack_val = divines.get(item, 0.0)
+            stack_target = targets.get(item, 1)
+            # Avoid division by zero
+            per_item_normal = stack_val / stack_target if stack_target else 0
+            per_item_instant = per_item_normal * bank_buy_pct / 100
+            value_normal = qty * per_item_normal
+            value_instant = qty * per_item_instant
+            total_deposit += value_normal
+            total_instant += value_instant
+            rows.append({
+                "Item": item,
+                "Qty": qty,
+                "Full Value/Stack": f"{stack_val:.2f} / {stack_target} = {per_item_normal:.3f}",
+                "Deposit Payout": f"{value_normal:.3f}",
+                f"Instant Sell (@{bank_buy_pct}%)": f"{value_instant:.3f}"
+            })
+    if rows:
+        st.dataframe(pd.DataFrame(rows))
+        st.success(f"**Total Deposit Payout:** {total_deposit:.3f} Divines")
+        st.info(f"**Total Instant Sell Payout (@{bank_buy_pct}%):** {total_instant:.3f} Divines")
+    else:
+        st.info("No items entered for calculation.")
+
+st.markdown("---")
+
 # --- ADMIN DANGER ZONE: DELETE BY ITEM ---
 if ss('admin_logged', False):
     st.header("Admin: Danger Zone")

@@ -135,19 +135,6 @@ def get_all_usernames():
     except Exception:
         return []
 
-def get_all_deposits():
-    users = get_all_usernames()
-    all_deps = []
-    for user in users:
-        deps = get_deposits(user)
-        for dep in deps:
-            all_deps.append({
-                "User": user,
-                "Item": dep.get("item", ""),
-                "Quantity": dep.get("qty", 0)
-            })
-    return pd.DataFrame(all_deps)
-
 def get_deposits(user_id):
     if not user_id: return []
     try:
@@ -163,6 +150,23 @@ def get_deposits(user_id):
         return results
     except Exception:
         return []
+
+# --- DATAFRAME FIX: Guarantee columns exist, even if empty
+def get_all_deposits():
+    users = get_all_usernames()
+    all_deps = []
+    for user in users:
+        deps = get_deposits(user)
+        for dep in deps:
+            all_deps.append({
+                "User": user,
+                "Item": dep.get("item", ""),
+                "Quantity": dep.get("qty", 0)
+            })
+    if not all_deps:
+        # Guarantee these columns exist, even if empty
+        return pd.DataFrame(columns=["User", "Item", "Quantity"])
+    return pd.DataFrame(all_deps)
 
 def add_deposit(user, item, qty, value):
     try:
@@ -352,6 +356,8 @@ st.markdown("---")
 # --- DEPOSITS OVERVIEW ---
 st.header("Deposits Overview")
 df = get_all_deposits()
+if df.empty:
+    df = pd.DataFrame(columns=["User", "Item", "Quantity"])  # Guarantee columns for empty DB
 for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
     color = CATEGORY_COLORS.get(cat, "#FFD700")
     st.markdown(f"""

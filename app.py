@@ -61,7 +61,7 @@ ITEM_COLORS = {
 }
 def get_item_color(item): return ITEM_COLORS.get(item, "#FFF")
 
-# --- SESSION STATE ---
+# --- SESSION STATE INIT ---
 def init_session():
     defaults = {
         "admin_logged": False,
@@ -82,7 +82,7 @@ def init_session():
             st.session_state[k] = v
 init_session()
 
-# --- ADMIN SESSION TIMEOUT ---
+# --- SESSION TIMEOUT ---
 def check_admin_timeout():
     if st.session_state['admin_logged']:
         now = time.time()
@@ -193,7 +193,7 @@ def log_admin_action(action, details):
     except Exception:
         pass  # Logging is non-critical
 
-# --- LOGIN/LOGOUT FLOW (NO AWKWARD STEPS) ---
+# --- LOGIN/LOGOUT UI & HANDLER ---
 col1, col2, col3 = st.columns([1,2,1])
 with col2:
     if not st.session_state['admin_logged']:
@@ -223,7 +223,6 @@ if st.session_state['show_login'] and not st.session_state['admin_logged']:
                 st.session_state['login_failed'] = False
                 st.session_state['just_logged_in'] = True
                 st.session_state['admin_last_action'] = time.time()
-                st.experimental_rerun()
             else:
                 st.session_state['admin_logged'] = False
                 st.session_state['admin_user'] = ""

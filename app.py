@@ -181,6 +181,37 @@ def add_deposit(user, item, qty, value):
         st.error(f"Error adding deposit for {user}: {e}")
         return False, str(e)
 
+# --- ADMIN LOGGING ---
+def log_admin(action, details=""):
+    """Write a log entry for admin actions."""
+    try:
+        db.collection("admin_logs").add({
+            "timestamp": datetime.utcnow(),
+            "admin_user": st.session_state.get("admin_user", "unknown"),
+            "action": action,
+            "details": details
+        })
+    except Exception as e:
+        st.warning(f"Failed to write admin log: {e}")
+
+def show_admin_logs(n=30):
+    """Display last n admin logs in a nice DataFrame."""
+    try:
+        logs_ref = db.collection("admin_logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(n).stream()
+        logs = [{
+            "Time": l.to_dict().get("timestamp"),
+            "Admin": l.to_dict().get("admin_user"),
+            "Action": l.to_dict().get("action"),
+            "Details": l.to_dict().get("details"),
+        } for l in logs_ref]
+        if logs:
+            df = pd.DataFrame(logs)
+            st.dataframe(df)
+        else:
+            st.info("No admin logs yet.")
+    except Exception as e:
+        st.warning(f"Could not load admin logs: {e}")
+
 # --- LOGIN/LOGOUT UI & HANDLER ---
 col1, col2, col3 = st.columns([1,2,1])
 with col2:
@@ -188,7 +219,6 @@ with col2:
         if st.button("Admin login"):
             st.session_state['show_login'] = not ss('show_login', False)
             st.info("If you just enabled login, enter credentials below and press the login button in the form.")
-            # DO NOT STOP HERE!
     else:
         if st.button("Admin logout"):
             for key in ["admin_logged", "admin_user", "show_login", "login_failed", "admin_last_action"]:
@@ -215,7 +245,8 @@ if ss('show_login', False) and not ss('admin_logged', False):
                 st.session_state['show_login'] = False
                 st.session_state['login_failed'] = False
                 st.session_state['admin_last_action'] = time.time()
-                st.success("Login success! Press the login button again to confirm.")  # <-- INFO
+                st.success("Login success! Press the login button again to confirm.")
+                log_admin("Admin Login", f"Admin {uname} logged in.")
                 st.stop()
             else:
                 st.session_state['admin_logged'] = False
@@ -273,7 +304,9 @@ with st.sidebar:
             new_divines[item] = div
         if st.button("Save Targets and Values") and changed:
             save_item_settings(new_targets, new_divines, bank_buy_pct)
+            log_admin("Edit Targets/Values", f"Targets: {new_targets}, Divines: {new_divines}, Bank Buy %: {bank_buy_pct}")
             st.success("Targets, Divine values and Bank % saved!")
+
     else:
         for item in ALL_ITEMS:
             st.markdown(
@@ -298,13 +331,16 @@ if ss('admin_logged', False):
         if submitted and user:
             st.session_state['deposit_in_progress'] = True
             any_added = False
+            deposit_list = []
             for item, qty in item_qtys.items():
                 if qty > 0:
                     value = divines.get(item, 0.0)
                     ok, reason = add_deposit(user, item, qty, value)
                     if ok:
                         any_added = True
+                        deposit_list.append(f"{qty}x {item}")
             if any_added:
+                log_admin("Add Deposit", f"User: {user}, Items: {', '.join(deposit_list)}")
                 st.success("Deposits added!")
             else:
                 st.info("No new deposits added.")
@@ -413,3 +449,7 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
 
 st.markdown("---")
 
+# --- ADMIN LOGS ---
+if ss('admin_logged', False):
+    st.header("Admin Logs (last 30 actions)")
+    show_admin_logs(n=30)

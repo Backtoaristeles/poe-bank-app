@@ -95,6 +95,8 @@ def check_admin_timeout():
 check_admin_timeout()
 
 # --- FIRESTORE HELPERS ---
+
+@st.cache_data(ttl=20)
 def get_item_settings():
     try:
         settings_doc = db.collection("meta").document("item_settings").get()
@@ -205,29 +207,29 @@ def add_normal_deposit(user, admin_user, item, qty, value):
         st.error(f"Error adding deposit: {e}")
         return False
 
-def get_all_usernames():
-    try:
-        users_ref = db.collection("users").stream()
-        names = set()
-        for u in users_ref:
-            names.add(u.id)
-        return sorted(list(names))
-    except Exception:
-        return []
-
-def get_deposits(user_id):
-    if not user_id: return []
-    try:
-        deps = db.collection("users").document(user_id).collection("deposits").order_by("timestamp").stream()
-        results = []
-        for d in deps:
-            rec = d.to_dict()
-            rec["id"] = d.id
-            rec["timestamp"] = rec.get("timestamp", datetime.now())
-            results.append(rec)
-        return results
-    except Exception:
-        return []
+# --- OPTIMIZED: Batch fetch all user deposits as DataFrame ---
+@st.cache_data(ttl=20, show_spinner="Loading all deposits…")
+def get_all_deposits():
+    users_ref = db.collection("users").stream()
+    all_deps = []
+    for u in users_ref:
+        user_id = u.id
+        deps = db.collection("users").document(user_id).collection("deposits").stream()
+        for dep in deps:
+            d = dep.to_dict()
+            d["user"] = user_id
+            all_deps.append(d)
+    if not all_deps:
+        return pd.DataFrame(columns=["user", "item", "qty", "timestamp", "value"])
+    df = pd.DataFrame(all_deps)
+    # Defensive: Ensure columns
+    for col in ["user", "item", "qty", "timestamp", "value"]:
+        if col not in df.columns:
+            df[col] = None
+    if "timestamp" in df:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0).astype(int)
+    return df
 
 # --- LOGIN HANDLING ---
 col1, col2, col3 = st.columns([1,2,1])
@@ -357,6 +359,7 @@ if ss('admin_logged', False):
 st.header("Deposits Overview")
 targets, divines, bank_buy_pct = get_item_settings()
 bank_buy_pct = bank_buy_pct or DEFAULT_BANK_BUY_PCT
+all_deposits_df = get_all_deposits()
 
 for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
     color = CATEGORY_COLORS.get(cat, "#FFD700")
@@ -366,13 +369,8 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
     """, unsafe_allow_html=True)
     item_totals = []
     for item in items:
-        # Sum all user deposits for item
-        total = 0
-        for user in get_all_usernames():
-            deps = get_deposits(user)
-            for dep in deps:
-                if dep.get("item") == item:
-                    total += dep.get("qty", 0)
+        item_df = all_deposits_df[all_deposits_df["item"] == item]
+        total = int(item_df["qty"].sum())
         item_totals.append((item, total))
     item_totals.sort(key=lambda x: x[1], reverse=True)
     for item, total in item_totals:
@@ -425,14 +423,9 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
             st.progress(min(total / target, 1.0), text=f"{total}/{target}")
 
         with st.expander("Per-user breakdown & payout", expanded=False):
-            summary = []
-            for user in get_all_usernames():
-                user_deps = get_deposits(user)
-                item_qty = sum(dep.get("qty", 0) for dep in user_deps if dep.get("item") == item)
-                if item_qty > 0:
-                    summary.append({"User": user, "Quantity": item_qty})
-            if summary:
-                user_summary = pd.DataFrame(summary)
+            item_df = all_deposits_df[all_deposits_df["item"] == item]
+            if not item_df.empty:
+                user_summary = item_df.groupby("user")["qty"].sum().reset_index().rename(columns={"qty": "Quantity"})
                 payouts = []
                 fees = []
                 for idx, row in user_summary.iterrows():

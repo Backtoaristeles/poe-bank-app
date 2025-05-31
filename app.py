@@ -207,6 +207,16 @@ def add_normal_deposit(user, admin_user, item, qty, value):
         st.error(f"Error adding deposit: {e}")
         return False
 
+# --- Deposit Deletion Helper ---
+def delete_deposit(user, deposit_id):
+    try:
+        db.collection("users").document(user).collection("deposits").document(deposit_id).delete()
+        log_admin("Deleted deposit", f"User: {user}, Deposit ID: {deposit_id}")
+        st.success("Deposit deleted!")
+        st.experimental_rerun()
+    except Exception as e:
+        st.error(f"Failed to delete deposit: {e}")
+
 # --- OPTIMIZED: Batch fetch all user deposits as DataFrame ---
 @st.cache_data(ttl=20, show_spinner="Loading all deposits…")
 def get_all_deposits():
@@ -218,12 +228,12 @@ def get_all_deposits():
         for dep in deps:
             d = dep.to_dict()
             d["user"] = user_id
+            d["id"] = dep.id   # Make sure deposit Firestore doc ID is included!
             all_deps.append(d)
     if not all_deps:
-        return pd.DataFrame(columns=["user", "item", "qty", "timestamp", "value"])
+        return pd.DataFrame(columns=["user", "item", "qty", "timestamp", "value", "id"])
     df = pd.DataFrame(all_deps)
-    # Defensive: Ensure columns
-    for col in ["user", "item", "qty", "timestamp", "value"]:
+    for col in ["user", "item", "qty", "timestamp", "value", "id"]:
         if col not in df.columns:
             df[col] = None
     if "timestamp" in df:
@@ -442,6 +452,24 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
                     user_summary.style.format({"Fee (10%)": "{:.1f}", "Payout (Divines, after fee)": "{:.1f}"}),
                     use_container_width=True
                 )
+                
+                # ADMIN: Show individual deposits for this item, with delete button
+                if ss('admin_logged', False):
+                    st.markdown("---")
+                    st.write("**Individual Deposits (admin-only, with delete option):**")
+                    for idx, row in item_df.sort_values(["user", "timestamp"]).iterrows():
+                        user = row["user"]
+                        qty = row.get("qty", 0)
+                        ts = row.get("timestamp", "")
+                        value = row.get("value", 0)
+                        deposit_id = row.get("id") or None
+                        cols = st.columns([2, 2, 2, 2, 1])
+                        cols[0].write(f"User: `{user}`")
+                        cols[1].write(f"Qty: `{qty}`")
+                        cols[2].write(f"Value: `{value:.2f} Div`")
+                        cols[3].write(f"Time: `{ts}`")
+                        if deposit_id and cols[4].button("Delete", key=f"del_{deposit_id}_{user}_{item}"):
+                            delete_deposit(user, deposit_id)
             else:
                 st.info("No deposits for this item.")
 

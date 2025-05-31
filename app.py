@@ -183,7 +183,6 @@ def add_deposit(user, item, qty, value):
 
 # --- ADMIN LOGGING ---
 def log_admin(action, details=""):
-    """Write a log entry for admin actions."""
     try:
         db.collection("admin_logs").add({
             "timestamp": datetime.utcnow(),
@@ -195,7 +194,6 @@ def log_admin(action, details=""):
         st.warning(f"Failed to write admin log: {e}")
 
 def show_admin_logs(n=30):
-    """Display last n admin logs in a nice DataFrame."""
     try:
         logs_ref = db.collection("admin_logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(n).stream()
         logs = [{
@@ -446,8 +444,28 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
 
 st.markdown("---")
 
+# --- ADMIN DANGER ZONE: DELETE CATEGORY ---
+if ss('admin_logged', False):
+    st.header("Admin: Danger Zone")
+    st.warning("⚠️ Danger: These buttons permanently delete ALL deposits for an entire category. There is NO undo.")
+    for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
+        if st.button(f"Delete ALL deposits in category: {cat}"):
+            try:
+                num_deleted = 0
+                user_list = get_all_usernames()
+                for user in user_list:
+                    deps = get_deposits(user)
+                    for dep in deps:
+                        if dep.get("item") in items:
+                            db.collection("users").document(user).collection("deposits").document(dep["id"]).delete()
+                            num_deleted += 1
+                log_admin("Delete Category", f"Deleted all deposits for category '{cat}' ({num_deleted} deleted)")
+                st.success(f"Deleted all deposits in '{cat}'. Total deleted: {num_deleted}")
+            except Exception as e:
+                st.error(f"Error deleting deposits for {cat}: {e}")
+    st.markdown("---")
+
 # --- ADMIN LOGS ALWAYS SHOWN AT BOTTOM FOR ADMIN ---
 if ss('admin_logged', False):
     st.header("Admin Logs (last 30 actions)")
-    st.write("_If you see this, logs are running below. If empty, no actions logged yet!_")
     show_admin_logs(n=30)

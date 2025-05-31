@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
+import math
+import time
 from datetime import datetime
 import firebase_admin
 from firebase_admin import credentials, firestore
-import math
-import time
 
 # --- FIREBASE INIT ---
 st.set_page_config(page_title="PoE Bulk Item Bank", layout="wide")
@@ -14,8 +14,12 @@ if not firebase_admin._apps:
 db = firestore.client()
 
 # --- CONFIG ---
-ADMIN_USERS = list(st.secrets["admin_passwords"].keys())
-ADMIN_PASSWORDS = dict(st.secrets["admin_passwords"])
+ADMIN_USERS = ["Diablo", "JESUS", "LT"]
+ADMIN_PASSWORDS = {
+    "Diablo": "DiabloSecret123",
+    "JESUS": "JesusPass456",
+    "LT": "LtCool789"
+}
 SESSION_TIMEOUT = 15 * 60  # 15 minutes
 
 ORIGINAL_ITEM_CATEGORIES = {
@@ -62,6 +66,9 @@ ITEM_COLORS = {
 def get_item_color(item): return ITEM_COLORS.get(item, "#FFF")
 
 # --- SESSION STATE INIT ---
+def ss(key, default=None):
+    return st.session_state[key] if key in st.session_state else default
+
 def init_session():
     defaults = {
         "admin_logged": False,
@@ -74,7 +81,6 @@ def init_session():
         "deposit_submitted": False,
         "deposit_in_progress": False,
         "admin_last_action": 0.0,
-        # No rerun flags needed
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -83,15 +89,13 @@ init_session()
 
 # --- SESSION TIMEOUT ---
 def check_admin_timeout():
-    if st.session_state['admin_logged']:
+    if ss('admin_logged', False):
         now = time.time()
-        last = st.session_state.get('admin_last_action', now)
+        last = ss('admin_last_action', now)
         if now - last > SESSION_TIMEOUT:
             st.session_state['admin_logged'] = False
             st.session_state['admin_user'] = ""
             st.warning("Admin session expired. Please log in again.")
-        else:
-            st.session_state['admin_last_action'] = now
 check_admin_timeout()
 
 # --- FIRESTORE FUNCTIONS ---
@@ -118,7 +122,6 @@ def save_item_settings(targets, divines, bank_buy_pct):
             "divines": divines,
             "bank_buy_pct": bank_buy_pct
         }, merge=True)
-        log_admin_action("EditSettings", f"Targets: {targets}, Divines: {divines}, Bank%: {bank_buy_pct}")
     except Exception as e:
         st.error(f"Error saving settings: {e}")
 
@@ -173,43 +176,34 @@ def add_deposit(user, item, qty, value):
             "timestamp": datetime.utcnow()
         }
         deposits_ref.add(dep)
-        log_admin_action("AddDeposit", f"{user}: {qty}x {item}")
         return True, ""
     except Exception as e:
         st.error(f"Error adding deposit for {user}: {e}")
         return False, str(e)
 
-def log_admin_action(action, details):
-    try:
-        db.collection("admin_logs").add({
-            "timestamp": datetime.utcnow(),
-            "admin": st.session_state.get("admin_user", ""),
-            "action": action,
-            "details": details,
-        })
-    except Exception:
-        pass  # Logging is non-critical
-
 # --- LOGIN/LOGOUT UI & HANDLER ---
 col1, col2, col3 = st.columns([1,2,1])
 with col2:
-    if not st.session_state['admin_logged']:
+    if not ss('admin_logged', False):
         if st.button("Admin login"):
-            st.session_state['show_login'] = not st.session_state['show_login']
-            st.info("Press the login button again after entering your credentials to confirm login.")
+            st.session_state['show_login'] = not ss('show_login', False)
+            st.info("Press login again after entering credentials to confirm.")  # <-- INFO
+            st.stop()
     else:
         if st.button("Admin logout"):
             for key in ["admin_logged", "admin_user", "show_login", "login_failed", "admin_last_action"]:
                 st.session_state[key] = False if key != "admin_user" else ""
-            st.info("Press logout again to confirm logout.")
+            st.info("Press logout again to confirm logout.")  # <-- INFO
+            st.stop()
 
-# --- LOGIN FORM ---
-if st.session_state['show_login'] and not st.session_state['admin_logged']:
+if ss('show_login', False) and not ss('admin_logged', False):
     col_spacer1, col_login, col_spacer2 = st.columns([1,2,1])
     with col_login:
         with st.form("admin_login_form"):
             st.write("**Admin Login**")
-            st.markdown("*You may need to press the login button twice after entering your credentials.*", unsafe_allow_html=True)
+            st.markdown(
+                "<span style='color:#f70'><b>You may need to press the login button twice after entering your credentials.</b></span>",
+                unsafe_allow_html=True)
             uname = st.text_input("Username")
             pw = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Login")
@@ -220,16 +214,17 @@ if st.session_state['show_login'] and not st.session_state['admin_logged']:
                 st.session_state['show_login'] = False
                 st.session_state['login_failed'] = False
                 st.session_state['admin_last_action'] = time.time()
+                st.success("Login success! Press the login button again to confirm.")  # <-- INFO
+                st.stop()
             else:
                 st.session_state['admin_logged'] = False
                 st.session_state['admin_user'] = ""
                 st.session_state['login_failed'] = True
-    if st.session_state['login_failed']:
-        st.error("Incorrect username or password.")
+                st.error("Incorrect username or password.")
+                st.stop()
 
-# --- ADMIN MODE CAPTION ---
-if st.session_state['admin_logged']:
-    st.caption(f"**Admin mode enabled: {st.session_state['admin_user']}**")
+if ss('admin_logged', False):
+    st.caption(f"**Admin mode enabled: {ss('admin_user','')}**")
 else:
     st.caption("**Read only mode** (progress & deposit info only)")
 
@@ -239,7 +234,7 @@ targets, divines, bank_buy_pct = get_item_settings()
 # --- ADMIN SIDEBAR (ONLY IF LOGGED IN) ---
 with st.sidebar:
     st.header("Per-Item Targets & Divine Value")
-    if st.session_state['admin_logged']:
+    if ss('admin_logged', False):
         st.subheader("Bank Instant Buy Settings")
         bank_buy_pct_new = st.number_input(
             "Bank buy % of sell price (instant sell payout)",
@@ -289,7 +284,7 @@ with st.sidebar:
             )
 
 # --- MULTI-ITEM DEPOSIT FORM (ADMIN ONLY, DOUBLE-SUBMIT SAFE) ---
-if st.session_state['admin_logged']:
+if ss('admin_logged', False):
     with st.form("multi_item_deposit", clear_on_submit=True):
         st.subheader("Add a Deposit (multiple items per user)")
         user = st.text_input("User").strip()
@@ -298,7 +293,7 @@ if st.session_state['admin_logged']:
         for i, item in enumerate(ALL_ITEMS):
             col = col1 if i % 2 == 0 else col2
             item_qtys[item] = col.number_input(f"{item}", min_value=0, step=1, key=f"add_{item}")
-        submitted = st.form_submit_button("Add Deposit(s)", disabled=st.session_state['deposit_in_progress'])
+        submitted = st.form_submit_button("Add Deposit(s)", disabled=ss('deposit_in_progress', False))
         if submitted and user:
             st.session_state['deposit_in_progress'] = True
             any_added = False
@@ -317,7 +312,7 @@ if st.session_state['admin_logged']:
             st.warning("Please enter a username.")
             st.session_state['deposit_in_progress'] = False
 
-    if st.session_state['deposit_in_progress'] and not submitted:
+    if ss('deposit_in_progress', False) and not submitted:
         st.session_state['deposit_in_progress'] = False
 
 st.markdown("---")

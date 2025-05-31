@@ -7,7 +7,6 @@ import math
 
 # --- FIREBASE INIT ---
 st.set_page_config(page_title="PoE Bulk Item Bank", layout="wide")
-
 if not firebase_admin._apps:
     cred = credentials.Certificate(dict(st.secrets["firebase_json"]))
     firebase_admin.initialize_app(cred)
@@ -84,22 +83,19 @@ init_session()
 def get_item_settings():
     try:
         settings_doc = db.collection("meta").document("item_settings").get()
+        targets = {item: 100 for item in ALL_ITEMS}
+        divines = {item: 0.0 for item in ALL_ITEMS}
+        bank_buy_pct = DEFAULT_BANK_BUY_PCT
         if settings_doc.exists:
             data = settings_doc.to_dict()
-            targets = data.get("targets", {})
-            divines = data.get("divines", {})
+            # update with saved settings
+            targets.update(data.get("targets", {}))
+            divines.update(data.get("divines", {}))
             bank_buy_pct = data.get("bank_buy_pct", DEFAULT_BANK_BUY_PCT)
-            # -- ensure all items are present with default values --
-            for item in ALL_ITEMS:
-                if item not in targets:
-                    targets[item] = 100
-                if item not in divines:
-                    divines[item] = 0.0
-            return targets, divines, bank_buy_pct
+        return targets, divines, bank_buy_pct
     except Exception:
-        pass
-    # fallback if Firestore unreachable
-    return ({item: 100 for item in ALL_ITEMS}, {item: 0.0 for item in ALL_ITEMS}, DEFAULT_BANK_BUY_PCT)
+        # fallback if Firestore unreachable
+        return ({item: 100 for item in ALL_ITEMS}, {item: 0.0 for item in ALL_ITEMS}, DEFAULT_BANK_BUY_PCT)
 
 def save_item_settings(targets, divines, bank_buy_pct):
     try:
@@ -129,7 +125,7 @@ def get_all_deposits():
         for dep in deps:
             all_deps.append({
                 "User": user,
-                "Item": dep.get("item"),
+                "Item": dep.get("item", ""),
                 "Quantity": dep.get("qty", 0)
             })
     return pd.DataFrame(all_deps)
@@ -143,6 +139,8 @@ def get_deposits(user_id):
             rec = d.to_dict()
             rec["id"] = d.id
             rec["timestamp"] = pd.to_datetime(rec.get("timestamp", datetime.utcnow()))
+            rec["item"] = rec.get("item", "")
+            rec["qty"] = rec.get("qty", 0)
             results.append(rec)
         return results
     except Exception:
@@ -173,12 +171,9 @@ with col2:
             st.session_state['show_login'] = not st.session_state['show_login']
     else:
         if st.button("Admin logout"):
-            st.session_state['admin_logged'] = False
-            st.session_state['admin_user'] = ""
-            st.session_state['show_login'] = False
-            st.session_state['login_failed'] = False
-            st.success("Logged out.")
-            st.experimental_rerun()
+            for key in ["admin_logged", "admin_user", "show_login", "login_failed"]:
+                st.session_state[key] = False if key != "admin_user" else ""
+            st.success("Logged out. Refresh to hide admin features.")
             st.stop()
 
 if st.session_state['show_login'] and not st.session_state['admin_logged']:
@@ -195,7 +190,7 @@ if st.session_state['show_login'] and not st.session_state['admin_logged']:
                 st.session_state['admin_user'] = uname
                 st.session_state['show_login'] = False
                 st.session_state['login_failed'] = False
-                st.experimental_rerun()
+                st.success("Login successful! Click anywhere or refresh to show admin features.")
                 st.stop()
             else:
                 st.session_state['admin_logged'] = False
@@ -246,7 +241,7 @@ with st.sidebar:
                 format="%.2f",
                 key=f"divine_{item}"
             )
-            if tgt != targets[item] or div != divines[item]:
+            if tgt != targets.get(item, 100) or div != divines.get(item, 0.0):
                 changed = True
             new_targets[item] = tgt
             new_divines[item] = div
@@ -259,7 +254,7 @@ with st.sidebar:
             st.markdown(
                 f"""
                 <span style='font-weight:bold;'>{item}:</span>
-                Target = {targets[item]}, Stack Value = {divines[item]:.2f} Divines<br>
+                Target = {targets.get(item, 100)}, Stack Value = {divines.get(item, 0.0):.2f} Divines<br>
                 """,
                 unsafe_allow_html=True
             )
@@ -284,8 +279,7 @@ if st.session_state['admin_logged']:
                     if ok:
                         any_added = True
             if any_added:
-                st.success("Deposits added!")
-                st.experimental_rerun()
+                st.success("Deposits added! Refresh to update.")
             else:
                 st.info("No new deposits added.")
         elif submitted:
@@ -295,7 +289,6 @@ st.markdown("---")
 
 # --- DEPOSITS OVERVIEW ---
 st.header("Deposits Overview")
-
 df = get_all_deposits()
 for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
     color = CATEGORY_COLORS.get(cat, "#FFD700")
@@ -310,8 +303,8 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
     item_totals.sort(key=lambda x: x[1], reverse=True)
     for item, total in item_totals:
         item_color = get_item_color(item)
-        target = targets[item]
-        divine_val = divines[item]
+        target = targets.get(item, 100)
+        divine_val = divines.get(item, 0.0)
         divine_total = (total / target * divine_val) if target > 0 else 0
         instant_sell_price = (divine_val / target) * bank_buy_pct / 100 if target > 0 else 0
 

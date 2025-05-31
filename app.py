@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 import firebase_admin
 from firebase_admin import credentials, firestore
+import math
 
 # --- FIREBASE INIT ---
 st.set_page_config(page_title="PoE Bulk Item Bank", layout="wide")
@@ -69,6 +70,9 @@ def init_session():
         "show_save_success": False,
         "show_deposit_success": False,
         "show_deposit_warning": "",
+        "show_login": False,
+        "login_failed": False,
+        "deposit_submitted": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -82,13 +86,19 @@ def get_item_settings():
         settings_doc = db.collection("meta").document("item_settings").get()
         if settings_doc.exists:
             data = settings_doc.to_dict()
-            return (
-                data.get("targets", {item: 100 for item in ALL_ITEMS}),
-                data.get("divines", {item: 0.0 for item in ALL_ITEMS}),
-                data.get("bank_buy_pct", DEFAULT_BANK_BUY_PCT)
-            )
+            targets = data.get("targets", {})
+            divines = data.get("divines", {})
+            bank_buy_pct = data.get("bank_buy_pct", DEFAULT_BANK_BUY_PCT)
+            # -- ensure all items are present with default values --
+            for item in ALL_ITEMS:
+                if item not in targets:
+                    targets[item] = 100
+                if item not in divines:
+                    divines[item] = 0.0
+            return targets, divines, bank_buy_pct
     except Exception:
         pass
+    # fallback if Firestore unreachable
     return ({item: 100 for item in ALL_ITEMS}, {item: 0.0 for item in ALL_ITEMS}, DEFAULT_BANK_BUY_PCT)
 
 def save_item_settings(targets, divines, bank_buy_pct):
@@ -111,17 +121,18 @@ def get_all_usernames():
     except Exception:
         return []
 
-def get_user_from_name(name):
-    name = (name or "").strip()
-    if not name:
-        return None, None
-    try:
-        user_ref = db.collection("users").document(name).get()
-        if user_ref.exists:
-            return user_ref.id, user_ref.to_dict()
-    except Exception:
-        pass
-    return None, None
+def get_all_deposits():
+    users = get_all_usernames()
+    all_deps = []
+    for user in users:
+        deps = get_deposits(user)
+        for dep in deps:
+            all_deps.append({
+                "User": user,
+                "Item": dep.get("item"),
+                "Quantity": dep.get("qty", 0)
+            })
+    return pd.DataFrame(all_deps)
 
 def get_deposits(user_id):
     if not user_id: return []
@@ -154,184 +165,147 @@ def add_deposit(user, item, qty, value):
         st.error(f"Error adding deposit: {e}")
         return False, str(e)
 
-# --- APP LOGIC ---
-
-def user_dashboard():
-    st.title("FundBank: Public Wallet Lookup")
-    all_names = get_all_usernames()
-    q = st.text_input("Search Username", "", key="search")
-    suggestions = [n for n in all_names if q.lower() in n.lower()][:20] if q else []
-    if suggestions:
-        st.write("Suggestions: " + ", ".join(suggestions))
-    selected_user = st.selectbox("Select from suggestions", [""] + suggestions) if suggestions else ""
-    show_user = selected_user if selected_user else q
-    show_user = (show_user or "").strip()
-    if not show_user:
-        st.info("Search for your username to view your dashboard.")
-        return
-    user_id, user = get_user_from_name(show_user)
-    if not user_id:
-        st.warning("No deposits found for this user.")
-        return
-
-    st.header(f"User Dashboard: {user_id}")
-    st.write(f"**All deposits and payout growth for:** `{user_id}`")
-    deposits = get_deposits(user_id)
-    if not deposits:
-        st.info("No deposits yet.")
-        return
-
-    df = pd.DataFrame(deposits)
-    if not df.empty and "timestamp" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"].astype(str))
-        st.subheader("Deposit History")
-        st.dataframe(df[["timestamp", "item", "qty", "value"]].sort_values("timestamp", ascending=False), use_container_width=True)
-
-        targets, divines, bank_buy_pct = get_item_settings()
-        st.subheader("Payout/Value Growth")
-        df["current_value"] = [
-            df.iloc[i]["qty"] * divines.get(df.iloc[i]["item"], 0.0)
-            for i in range(len(df))
-        ]
-        st.metric("Total Current Value", f"{df['current_value'].sum():,.2f} Divines")
-
-        st.subheader("Totals per Item Deposited")
-        totals = df.groupby("item")["qty"].sum().reset_index()
-        st.dataframe(totals, use_container_width=True)
+# --- TOP-CENTER ADMIN LOGIN BUTTON OR LOGOUT ---
+col1, col2, col3 = st.columns([1,2,1])
+with col2:
+    if not st.session_state['admin_logged']:
+        if st.button("Admin login"):
+            st.session_state['show_login'] = not st.session_state['show_login']
     else:
-        st.info("No deposit data available.")
+        if st.button("Admin logout"):
+            st.session_state['admin_logged'] = False
+            st.session_state['admin_user'] = ""
+            st.session_state['show_login'] = False
+            st.session_state['login_failed'] = False
+            st.success("Logged out.")
+            st.experimental_rerun()
+            st.stop()
 
-def admin_tools():
-    st.title("Admin Panel")
-
-    if not st.session_state.admin_logged:
+if st.session_state['show_login'] and not st.session_state['admin_logged']:
+    col_spacer1, col_login, col_spacer2 = st.columns([1,2,1])
+    with col_login:
         with st.form("admin_login_form"):
-            uname = st.text_input("Admin Username")
-            pw = st.text_input("Admin Password", type="password")
+            st.write("**Admin Login**")
+            uname = st.text_input("Username")
+            pw = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Login")
         if submitted:
             if uname in ADMIN_USERS and pw == ADMIN_PASSWORDS[uname]:
-                st.session_state.admin_logged = True
-                st.session_state.admin_user = uname
-                st.session_state.admin_ts = time.time()
-                st.success(f"Logged in as admin: {uname}")
-                return
-            st.error("Invalid credentials.")
-        return
+                st.session_state['admin_logged'] = True
+                st.session_state['admin_user'] = uname
+                st.session_state['show_login'] = False
+                st.session_state['login_failed'] = False
+                st.experimental_rerun()
+                st.stop()
+            else:
+                st.session_state['admin_logged'] = False
+                st.session_state['admin_user'] = ""
+                st.session_state['login_failed'] = True
+    if st.session_state['login_failed']:
+        st.error("Incorrect username or password.")
 
-    if time.time() - st.session_state.admin_ts > SESSION_TIMEOUT:
-        st.session_state.admin_logged = False
-        st.warning("Session expired. Please log in again.")
-        return
-    st.session_state.admin_ts = time.time()
-    st.info(f"Admin: {st.session_state.admin_user}")
+if st.session_state['admin_logged']:
+    st.caption(f"**Admin mode enabled: {st.session_state['admin_user']}**")
+else:
+    st.caption("**Read only mode** (progress & deposit info only)")
 
-    if st.button("Logout"):
-        st.session_state.admin_logged = False
-        st.session_state.admin_user = ""
-        st.success("Logged out.")
-        st.experimental_rerun()
-        return
+# --- DATA LOADING ---
+targets, divines, bank_buy_pct = get_item_settings()
 
-    if st.session_state.get("show_save_success", False):
-        st.success("Saved!")
-        st.session_state.show_save_success = False
-    if st.session_state.get("show_deposit_success", False):
-        st.success("Deposit(s) added!")
-        st.session_state.show_deposit_success = False
-    if st.session_state.get("show_deposit_warning", ""):
-        st.warning(st.session_state.show_deposit_warning)
-        st.session_state.show_deposit_warning = ""
-
-    # --- Settings ---
-    st.subheader("Edit Per-Item Targets, Values, Bank Buy %")
-    targets, divines, bank_buy_pct = get_item_settings()
-    with st.form("edit_targets_form"):
+with st.sidebar:
+    st.header("Per-Item Targets & Divine Value")
+    if st.session_state['admin_logged']:
+        st.subheader("Bank Instant Buy Settings")
         bank_buy_pct_new = st.number_input(
             "Bank buy % of sell price (instant sell payout)",
             min_value=10, max_value=100, step=1,
-            value=bank_buy_pct
+            value=bank_buy_pct,
+            key="bank_buy_pct_input"
         )
+        changed = False
+        if bank_buy_pct_new != bank_buy_pct:
+            bank_buy_pct = bank_buy_pct_new
+            changed = True
         new_targets = {}
         new_divines = {}
+        st.subheader("Edit Targets and Values")
         for item in ALL_ITEMS:
             cols = st.columns([2, 2])
             tgt = cols[0].number_input(
-                f"{item} target", min_value=1, value=int(targets.get(item, 100)), step=1, key=f"target_{item}"
+                f"{item} target",
+                min_value=1,
+                value=int(targets.get(item, 100)),
+                step=1,
+                key=f"target_{item}"
             )
             div = cols[1].number_input(
-                f"{item} stack value (Divines)", min_value=0.01,
-                value=float(divines.get(item, 0.0)), step=0.1, format="%.2f", key=f"div_{item}"
+                f"Stack Value (Divines)",
+                min_value=0.0,
+                value=float(divines.get(item, 0)),
+                step=0.1,
+                format="%.2f",
+                key=f"divine_{item}"
             )
+            if tgt != targets[item] or div != divines[item]:
+                changed = True
             new_targets[item] = tgt
             new_divines[item] = div
-        if st.form_submit_button("Save All Targets & Values"):
-            for v in new_targets.values():
-                if v <= 0:
-                    st.error("All targets must be positive numbers.")
-                    return
-            for v in new_divines.values():
-                if v <= 0:
-                    st.error("All stack values must be positive numbers.")
-                    return
-            save_item_settings(new_targets, new_divines, bank_buy_pct_new)
-            st.session_state.show_save_success = True
-            st.experimental_rerun()
-            return
+        if st.button("Save Targets and Values") and changed:
+            save_item_settings(new_targets, new_divines, bank_buy_pct)
+            st.success("Targets, Divine values and Bank % saved! Refresh the page to see updates.")
+            st.stop()
+    else:
+        for item in ALL_ITEMS:
+            st.markdown(
+                f"""
+                <span style='font-weight:bold;'>{item}:</span>
+                Target = {targets[item]}, Stack Value = {divines[item]:.2f} Divines<br>
+                """,
+                unsafe_allow_html=True
+            )
 
-    # --- Add Deposits ---
-    st.subheader("Add a Deposit (multiple items per user)")
-    all_users = get_all_usernames()
-    user = st.selectbox("User", all_users, key="deposit_user_select")
-    item_qtys = {}
-    col1, col2 = st.columns(2)
-    _, divines, _ = get_item_settings()
-    for i, item in enumerate(ALL_ITEMS):
-        col = col1 if i % 2 == 0 else col2
-        item_qtys[item] = col.number_input(f"{item}", min_value=0, step=1, key=f"add_{item}")
-    submitted = st.button("Add Deposit(s)", key="add_deposit_btn")
-    if submitted:
-        if not user:
-            st.session_state.show_deposit_warning = "Please select a user before adding deposits."
-            st.experimental_rerun()
-            return
-        any_added = False
-        for item, qty in item_qtys.items():
-            if qty > 0:
-                value = divines.get(item, 0.0)
-                ok, reason = add_deposit(user, item, qty, value)
-                if ok:
-                    any_added = True
-        if any_added:
-            st.session_state.show_deposit_success = True
-        st.experimental_rerun()
-        return
+# --- MULTI-ITEM DEPOSIT FORM (ADMIN ONLY) ---
+if st.session_state['admin_logged']:
+    with st.form("multi_item_deposit", clear_on_submit=True):
+        st.subheader("Add a Deposit (multiple items per user)")
+        user = st.text_input("User")
+        col1, col2 = st.columns(2)
+        item_qtys = {}
+        for i, item in enumerate(ALL_ITEMS):
+            col = col1 if i % 2 == 0 else col2
+            item_qtys[item] = col.number_input(f"{item}", min_value=0, step=1, key=f"add_{item}")
+        submitted = st.form_submit_button("Add Deposit(s)")
+        if submitted and user:
+            any_added = False
+            for item, qty in item_qtys.items():
+                if qty > 0:
+                    value = divines.get(item, 0.0)
+                    ok, reason = add_deposit(user.strip(), item, qty, value)
+                    if ok:
+                        any_added = True
+            if any_added:
+                st.success("Deposits added!")
+                st.experimental_rerun()
+            else:
+                st.info("No new deposits added.")
+        elif submitted:
+            st.warning("Please enter a username.")
 
-# --- PAGE ROUTER ---
-pages = ["🏦 User Dashboard", "🔑 Admin Panel"]
-page = st.sidebar.radio("Navigate", pages)
+st.markdown("---")
 
-if page == "🏦 User Dashboard":
-    user_dashboard()
-elif page == "🔑 Admin Panel":
-    admin_tools()
-
-# --- CATEGORY OVERVIEW, PROGRESS, BREAKDOWN ---
+# --- DEPOSITS OVERVIEW ---
 st.header("Deposits Overview")
-targets, divines, bank_buy_pct = get_item_settings()
+
+df = get_all_deposits()
 for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
     color = CATEGORY_COLORS.get(cat, "#FFD700")
-    st.markdown(f"<h2 style='color:{color}; font-weight:bold; margin-bottom: 14px;'>{cat}</h2>", unsafe_allow_html=True)
-    # Aggregate per item
-    all_users = get_all_usernames()
+    st.markdown(f"""
+    <div style='margin-top: 38px;'></div>
+    <h2 style="color:{color}; font-weight:bold; margin-bottom: 14px;">{cat}</h2>
+    """, unsafe_allow_html=True)
     item_totals = []
     for item in items:
-        total = 0
-        for user in all_users:
-            user_deps = get_deposits(user)
-            for dep in user_deps:
-                if dep["item"] == item:
-                    total += dep.get("qty", 0)
+        total = df[(df["Item"] == item)]["Quantity"].sum() if not df.empty else 0
         item_totals.append((item, total))
     item_totals.sort(key=lambda x: x[1], reverse=True)
     for item, total in item_totals:
@@ -385,28 +359,32 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
             st.progress(min(total / target, 1.0), text=f"{total}/{target}")
 
         # ---- Per-user breakdown & payout ----
-        # Build per-user summary for this item
-        user_summary = []
-        for user in all_users:
-            user_deps = get_deposits(user)
-            qty = sum(dep["qty"] for dep in user_deps if dep["item"] == item)
-            if qty > 0:
-                user_summary.append({"User": user, "Quantity": qty})
-        if user_summary:
-            with st.expander("Per-user breakdown & payout", expanded=False):
-                summary_df = pd.DataFrame(user_summary)
+        with st.expander("Per-user breakdown & payout", expanded=False):
+            item_df = df[df["Item"] == item]
+            if not item_df.empty:
+                user_summary = (
+                    item_df.groupby("User")["Quantity"]
+                    .sum()
+                    .sort_values(ascending=False)
+                    .reset_index()
+                )
                 payouts = []
                 fees = []
-                for idx, row in summary_df.iterrows():
+                for idx, row in user_summary.iterrows():
                     qty = row["Quantity"]
                     raw_payout = (qty / target) * divine_val if target else 0
-                    fee = round(raw_payout * 0.10, 1)
-                    payout_after_fee = raw_payout - fee
-                    payouts.append(payout_after_fee)
+                    fee = math.floor((raw_payout * 0.10) * 10) / 10
+                    payout_after_fee = raw_payout - (raw_payout * 0.10)
+                    payout_final = math.floor(payout_after_fee * 10) / 10
+                    payouts.append(payout_final)
                     fees.append(fee)
-                summary_df["Fee (10%)"] = fees
-                summary_df["Payout (Divines, after fee)"] = payouts
+                user_summary["Fee (10%)"] = fees
+                user_summary["Payout (Divines, after fee)"] = payouts
                 st.dataframe(
-                    summary_df.style.format({"Fee (10%)": "{:.1f}", "Payout (Divines, after fee)": "{:.1f}"}),
+                    user_summary.style.format({"Fee (10%)": "{:.1f}", "Payout (Divines, after fee)": "{:.1f}"}),
                     use_container_width=True
                 )
+            else:
+                st.info("No deposits for this item.")
+
+st.markdown("---")

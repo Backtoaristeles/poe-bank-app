@@ -73,7 +73,8 @@ def init_session():
         "show_login": False,
         "login_failed": False,
         "deposit_in_progress": False,
-        "admin_last_action": time.time()
+        "admin_last_action": time.time(),
+        "show_reset_msg": None
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -280,10 +281,13 @@ if ss('admin_logged', False):
     colB.metric("Instant Sells", f"{inst_val:.3f} Div")
     colC.metric("Combined Total", f"{combined_val:.3f} Div")
 
+    # FIX: Show message after rerun, not before!
     if st.button("⚠️ Reset My Admin Totals (no undo)"):
         reset_admin_totals(ss('admin_user'))
-        st.success(f"Your admin totals have been reset. (Before reset → Normal: {norm_val:.3f} Div, Instant: {inst_val:.3f} Div)")
+        st.session_state['show_reset_msg'] = f"Your admin totals have been reset. (Before reset → Normal: {norm_val:.3f} Div, Instant: {inst_val:.3f} Div)"
         st.experimental_rerun()
+    if ss('show_reset_msg', None):
+        st.success(st.session_state.pop('show_reset_msg'))
 
     st.markdown("---")
 
@@ -420,7 +424,6 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
         else:
             st.progress(min(total / target, 1.0), text=f"{total}/{target}")
 
-        # ---- Per-user breakdown & payout ----
         with st.expander("Per-user breakdown & payout", expanded=False):
             summary = []
             for user in get_all_usernames():

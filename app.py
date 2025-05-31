@@ -35,7 +35,6 @@ ORIGINAL_ITEM_CATEGORIES = {
     ],
     "Tablets": [
         "Tablet Exp 9%+10% (random)",
-        "Quantity Tablet (6%+)",
         "Grand Project Tablet"
     ],
     "Various": [
@@ -59,7 +58,6 @@ ITEM_COLORS = {
     "Waystone EXP 35%": "#FFB347",
     "Waystone EXP": "#FFB347",
     "Tablet Exp 9%+10% (random)": "#7FDBFF",
-    "Quantity Tablet (6%+)": "#B0E0E6",
     "Grand Project Tablet": "#FFDCB9",
     "Logbook level 79-80": "#42A5F5",
 }
@@ -467,7 +465,7 @@ with st.form("what_if_calc_form"):
     calc_submitted = st.form_submit_button("Estimate Payout")
 
 if calc_submitted:
-    targets, divines, bank_buy_pct = get_item_settings()  # Re-load in case admin changed
+    targets, divines, bank_buy_pct = get_item_settings()  # Reload for accuracy
     st.subheader("What-If Basket Breakdown")
     total_deposit = 0.0
     total_instant = 0.0
@@ -477,7 +475,6 @@ if calc_submitted:
         if qty > 0:
             stack_val = divines.get(item, 0.0)
             stack_target = targets.get(item, 1)
-            # Avoid division by zero
             per_item_normal = stack_val / stack_target if stack_target else 0
             per_item_instant = per_item_normal * bank_buy_pct / 100
             value_normal = qty * per_item_normal

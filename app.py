@@ -4,6 +4,7 @@ from datetime import datetime
 import firebase_admin
 from firebase_admin import credentials, firestore
 import math
+import time
 
 # --- FIREBASE INIT ---
 st.set_page_config(page_title="PoE Bulk Item Bank", layout="wide")
@@ -15,7 +16,7 @@ db = firestore.client()
 # --- CONFIG ---
 ADMIN_USERS = list(st.secrets["admin_passwords"].keys())
 ADMIN_PASSWORDS = dict(st.secrets["admin_passwords"])
-SESSION_TIMEOUT = 20 * 60
+SESSION_TIMEOUT = 15 * 60  # 15 minutes
 
 ORIGINAL_ITEM_CATEGORIES = {
     "Waystones": [
@@ -65,21 +66,36 @@ def init_session():
     defaults = {
         "admin_logged": False,
         "admin_user": "",
-        "admin_ts": 0,
         "show_save_success": False,
         "show_deposit_success": False,
         "show_deposit_warning": "",
         "show_login": False,
         "login_failed": False,
         "deposit_submitted": False,
+        "deposit_in_progress": False,
+        "admin_last_action": 0.0,
+        "manual_refresh": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 init_session()
 
-# --- FIRESTORE FUNCTIONS ---
+# --- ADMIN SESSION TIMEOUT ---
+def check_admin_timeout():
+    if st.session_state['admin_logged']:
+        now = time.time()
+        last = st.session_state.get('admin_last_action', now)
+        # Reset on every interaction
+        st.session_state['admin_last_action'] = now
+        if now - last > SESSION_TIMEOUT:
+            st.session_state['admin_logged'] = False
+            st.session_state['admin_user'] = ""
+            st.warning("Admin session expired. Please log in again.")
+            st.stop()
+check_admin_timeout()
 
+# --- FIRESTORE FUNCTIONS ---
 def get_item_settings():
     try:
         settings_doc = db.collection("meta").document("item_settings").get()
@@ -88,13 +104,12 @@ def get_item_settings():
         bank_buy_pct = DEFAULT_BANK_BUY_PCT
         if settings_doc.exists:
             data = settings_doc.to_dict()
-            # update with saved settings
             targets.update(data.get("targets", {}))
             divines.update(data.get("divines", {}))
             bank_buy_pct = data.get("bank_buy_pct", DEFAULT_BANK_BUY_PCT)
         return targets, divines, bank_buy_pct
-    except Exception:
-        # fallback if Firestore unreachable
+    except Exception as e:
+        st.error(f"Could not load item settings. ({e})")
         return ({item: 100 for item in ALL_ITEMS}, {item: 0.0 for item in ALL_ITEMS}, DEFAULT_BANK_BUY_PCT)
 
 def save_item_settings(targets, divines, bank_buy_pct):
@@ -104,6 +119,7 @@ def save_item_settings(targets, divines, bank_buy_pct):
             "divines": divines,
             "bank_buy_pct": bank_buy_pct
         }, merge=True)
+        log_admin_action("EditSettings", f"Targets: {targets}, Divines: {divines}, Bank%: {bank_buy_pct}")
     except Exception as e:
         st.error(f"Error saving settings: {e}")
 
@@ -158,10 +174,23 @@ def add_deposit(user, item, qty, value):
             "timestamp": datetime.utcnow()
         }
         deposits_ref.add(dep)
+        log_admin_action("AddDeposit", f"{user}: {qty}x {item}")
         return True, ""
     except Exception as e:
-        st.error(f"Error adding deposit: {e}")
+        st.error(f"Error adding deposit for {user}: {e}")
         return False, str(e)
+
+def log_admin_action(action, details):
+    try:
+        db.collection("admin_logs").add({
+            "timestamp": datetime.utcnow(),
+            "admin": st.session_state.get("admin_user", ""),
+            "action": action,
+            "details": details,
+        })
+    except Exception as e:
+        # logging is non-critical
+        pass
 
 # --- TOP-CENTER ADMIN LOGIN BUTTON OR LOGOUT ---
 col1, col2, col3 = st.columns([1,2,1])
@@ -171,7 +200,7 @@ with col2:
             st.session_state['show_login'] = not st.session_state['show_login']
     else:
         if st.button("Admin logout"):
-            for key in ["admin_logged", "admin_user", "show_login", "login_failed"]:
+            for key in ["admin_logged", "admin_user", "show_login", "login_failed", "admin_last_action"]:
                 st.session_state[key] = False if key != "admin_user" else ""
             st.success("Logged out. Refresh to hide admin features.")
             st.stop()
@@ -190,7 +219,9 @@ if st.session_state['show_login'] and not st.session_state['admin_logged']:
                 st.session_state['admin_user'] = uname
                 st.session_state['show_login'] = False
                 st.session_state['login_failed'] = False
-                st.success("Login successful! Click anywhere or refresh to show admin features.")
+                st.session_state['admin_last_action'] = time.time()
+                st.success("Login successful! Click 'Refresh' or interact to show admin features.")
+                st.session_state['manual_refresh'] = True
                 st.stop()
             else:
                 st.session_state['admin_logged'] = False
@@ -203,6 +234,10 @@ if st.session_state['admin_logged']:
     st.caption(f"**Admin mode enabled: {st.session_state['admin_user']}**")
 else:
     st.caption("**Read only mode** (progress & deposit info only)")
+
+if st.session_state.get("manual_refresh", False):
+    st.button("Refresh to update", on_click=lambda: st.session_state.update({"manual_refresh": False}))
+    st.stop()
 
 # --- DATA LOADING ---
 targets, divines, bank_buy_pct = get_item_settings()
@@ -247,7 +282,8 @@ with st.sidebar:
             new_divines[item] = div
         if st.button("Save Targets and Values") and changed:
             save_item_settings(new_targets, new_divines, bank_buy_pct)
-            st.success("Targets, Divine values and Bank % saved! Refresh the page to see updates.")
+            st.success("Targets, Divine values and Bank % saved! Click 'Refresh' to update.")
+            st.session_state['manual_refresh'] = True
             st.stop()
     else:
         for item in ALL_ITEMS:
@@ -259,31 +295,43 @@ with st.sidebar:
                 unsafe_allow_html=True
             )
 
-# --- MULTI-ITEM DEPOSIT FORM (ADMIN ONLY) ---
+# --- MULTI-ITEM DEPOSIT FORM (ADMIN ONLY, DOUBLE-SUBMIT SAFE) ---
 if st.session_state['admin_logged']:
     with st.form("multi_item_deposit", clear_on_submit=True):
         st.subheader("Add a Deposit (multiple items per user)")
-        user = st.text_input("User")
+        user = st.text_input("User").strip()
         col1, col2 = st.columns(2)
         item_qtys = {}
         for i, item in enumerate(ALL_ITEMS):
             col = col1 if i % 2 == 0 else col2
             item_qtys[item] = col.number_input(f"{item}", min_value=0, step=1, key=f"add_{item}")
-        submitted = st.form_submit_button("Add Deposit(s)")
+        submitted = st.form_submit_button("Add Deposit(s)", disabled=st.session_state['deposit_in_progress'])
         if submitted and user:
+            st.session_state['deposit_in_progress'] = True
             any_added = False
             for item, qty in item_qtys.items():
                 if qty > 0:
                     value = divines.get(item, 0.0)
-                    ok, reason = add_deposit(user.strip(), item, qty, value)
+                    ok, reason = add_deposit(user, item, qty, value)
                     if ok:
                         any_added = True
             if any_added:
-                st.success("Deposits added! Refresh to update.")
+                st.success("Deposits added! Click 'Refresh' to update.")
+                st.session_state['manual_refresh'] = True
             else:
                 st.info("No new deposits added.")
+            st.session_state['deposit_in_progress'] = False
+            st.stop()
         elif submitted:
             st.warning("Please enter a username.")
+            st.session_state['deposit_in_progress'] = False
+    # Reset after form shows again
+    if st.session_state['deposit_in_progress'] and not submitted:
+        st.session_state['deposit_in_progress'] = False
+
+if st.session_state.get("manual_refresh", False):
+    st.button("Refresh to update", on_click=lambda: st.session_state.update({"manual_refresh": False}))
+    st.stop()
 
 st.markdown("---")
 

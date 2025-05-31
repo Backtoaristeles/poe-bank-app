@@ -5,6 +5,7 @@ import pandas as pd
 from datetime import datetime
 import time
 import hashlib
+import re
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="PoE Bulk Item Bank", layout="wide")
@@ -57,18 +58,14 @@ def safe_to_datetime(val):
     except Exception:
         return pd.NaT
 
-def init_session_state():
-    defaults = {
-        "admin_logged": False,
-        "admin_user": "",
-        "admin_ts": 0
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-init_session_state()
+def validate_username(name):
+    if not name or not name.strip():
+        return False, "Username cannot be empty."
+    # Optional: Add stricter regex for valid characters, e.g. letters, numbers, underscores
+    if not re.match(r"^[\w\-\s]{2,32}$", name):
+        return False, "Invalid username (2-32 chars, only letters/numbers/_/-/space allowed)."
+    return True, ""
 
-# --- DB Functions ---
 def get_item_settings():
     try:
         settings_doc = db.collection("meta").document("item_settings").get()
@@ -131,9 +128,22 @@ def get_deposits(user_id):
 
 def add_deposit(user, item, qty, value):
     try:
+        if not user or not item:
+            st.error("User or item is missing.")
+            return False, "User or item is missing."
+        if qty <= 0:
+            st.error("Quantity must be positive.")
+            return False, "Quantity must be positive."
+        if value <= 0:
+            st.error("Value must be positive.")
+            return False, "Value must be positive."
         doc_ref = db.collection("users").document(user)
         doc_ref.set({}, merge=True)
         deposits_ref = doc_ref.collection("deposits")
+        # --- Check for duplicates ---
+        existing = deposits_ref.where("item", "==", item).where("qty", "==", qty).stream()
+        if any(existing):
+            return False, "Duplicate deposit exists for this user/item/qty."
         dep = {
             "item": item,
             "qty": qty,
@@ -141,10 +151,24 @@ def add_deposit(user, item, qty, value):
             "timestamp": datetime.utcnow()
         }
         deposits_ref.add(dep)
-        return True
+        return True, ""
     except Exception as e:
         st.error(f"Error adding deposit: {e}")
-        return False
+        return False, str(e)
+
+def init_session_state():
+    defaults = {
+        "admin_logged": False,
+        "admin_user": "",
+        "admin_ts": 0,
+        "show_save_success": False,
+        "show_deposit_success": False,
+        "show_deposit_warning": "",
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+init_session_state()
 
 # --- APP LOGIC ---
 
@@ -152,7 +176,7 @@ def user_dashboard():
     st.title("FundBank: Public Wallet Lookup")
     all_names = get_all_usernames()
     q = st.text_input("Search Username", "", key="search")
-    suggestions = [n for n in all_names if q.lower() in n.lower()][:10] if q else []
+    suggestions = [n for n in all_names if q.lower() in n.lower()][:20] if q else []
     if suggestions:
         st.write("Suggestions: " + ", ".join(suggestions))
     selected_user = st.selectbox("Select from suggestions", [""] + suggestions) if suggestions else ""
@@ -160,6 +184,10 @@ def user_dashboard():
     show_user = (show_user or "").strip()
     if not show_user:
         st.info("Search for your username to view your dashboard.")
+        return
+    valid, msg = validate_username(show_user)
+    if not valid:
+        st.warning(msg)
         return
     user_id, user = get_user_from_name(show_user)
     if not user_id:
@@ -227,6 +255,17 @@ def admin_tools():
         st.experimental_rerun()
         return
 
+    # --- Success/Warning Feedback ---
+    if st.session_state.get("show_save_success", False):
+        st.success("Saved!")
+        st.session_state.show_save_success = False
+    if st.session_state.get("show_deposit_success", False):
+        st.success("Deposit(s) added!")
+        st.session_state.show_deposit_success = False
+    if st.session_state.get("show_deposit_warning", ""):
+        st.warning(st.session_state.show_deposit_warning)
+        st.session_state.show_deposit_warning = ""
+
     # --- Settings ---
     st.subheader("Edit Per-Item Targets, Values, Bank Buy %")
     targets, divines, bank_buy_pct = get_item_settings()
@@ -244,14 +283,23 @@ def admin_tools():
                 f"{item} target", min_value=1, value=int(targets.get(item, 100)), step=1, key=f"target_{item}"
             )
             div = cols[1].number_input(
-                f"{item} stack value (Divines)", min_value=0.0,
+                f"{item} stack value (Divines)", min_value=0.01,
                 value=float(divines.get(item, 0.0)), step=0.1, format="%.2f", key=f"div_{item}"
             )
             new_targets[item] = tgt
             new_divines[item] = div
         if st.form_submit_button("Save All Targets & Values"):
+            # Extra safety: No zero/negative values!
+            for v in new_targets.values():
+                if v <= 0:
+                    st.error("All targets must be positive numbers.")
+                    return
+            for v in new_divines.values():
+                if v <= 0:
+                    st.error("All stack values must be positive numbers.")
+                    return
             save_item_settings(new_targets, new_divines, bank_buy_pct_new)
-            st.success("Saved!")
+            st.session_state.show_save_success = True
             st.experimental_rerun()
             return
 
@@ -268,12 +316,30 @@ def admin_tools():
     submitted = st.button("Add Deposit(s)", key="add_deposit_btn")
     if submitted:
         if not user:
-            st.warning("Please select a user before adding deposits.")
+            st.session_state.show_deposit_warning = "Please select a user before adding deposits."
+            st.experimental_rerun()
             return
+        valid, msg = validate_username(user)
+        if not valid:
+            st.session_state.show_deposit_warning = msg
+            st.experimental_rerun()
+            return
+        any_added = False
+        warnings = []
         for item, qty in item_qtys.items():
             if qty > 0:
-                add_deposit(user, item, qty, divines.get(item, 0.0))
-                st.success(f"Added: {user} - {qty}x {item}")
+                value = divines.get(item, 0.0)
+                ok, reason = add_deposit(user, item, qty, value)
+                if ok:
+                    any_added = True
+                else:
+                    warnings.append(f"{item}: {reason}")
+        if any_added:
+            st.session_state.show_deposit_success = True
+        if warnings:
+            st.session_state.show_deposit_warning = "\n".join(warnings)
+        st.experimental_rerun()
+        return
 
 # --- PAGE ROUTER ---
 pages = ["🏦 User Dashboard", "🔑 Admin Panel"]

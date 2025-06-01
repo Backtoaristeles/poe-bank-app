@@ -4,29 +4,21 @@ import math
 import time
 from datetime import datetime
 
-# --- Try to import Firebase ---
+# --- DEBUGGING SECRETS FORMAT ---
+st.write("Firebase Secret Type:", type(st.secrets["firebase_json"]))
+st.write("Firebase Secret Sample:", dict(list(st.secrets["firebase_json"].items())[:3]))  # Only print a sample
+
+# --- FIREBASE INIT ---
 try:
     import firebase_admin
     from firebase_admin import credentials, firestore
-    FIREBASE_AVAILABLE = True
+    if not firebase_admin._apps:
+        cred = credentials.Certificate(dict(st.secrets["firebase_json"]))
+        firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    FIREBASE_OK = True
 except Exception as e:
-    FIREBASE_AVAILABLE = False
-    st.error(f"Could not import firebase_admin: {e}")
-
-# --- FIREBASE INIT ---
-st.set_page_config(page_title="PoE Bulk Item Bank", layout="wide")
-
-if FIREBASE_AVAILABLE:
-    try:
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(dict(st.secrets["firebase_json"]))
-            firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        FIREBASE_OK = True
-    except Exception as e:
-        st.error(f"Error initializing Firebase: {e}")
-        FIREBASE_OK = False
-else:
+    st.error(f"Firebase Initialization FAILED: {e}")
     FIREBASE_OK = False
 
 # --- CONFIG ---
@@ -118,7 +110,6 @@ def get_item_settings():
         st.error("Firestore not initialized. Check your credentials and internet connection.")
         return ({item: 100 for item in ALL_ITEMS}, {item: 0.0 for item in ALL_ITEMS}, DEFAULT_BANK_BUY_PCT)
     try:
-        st.write("Connecting to Firestore for item settings...")
         settings_doc = db.collection("meta").document("item_settings").get()
         targets = {item: 100 for item in ALL_ITEMS}
         divines = {item: 0.0 for item in ALL_ITEMS}
@@ -128,7 +119,6 @@ def get_item_settings():
             targets.update(data.get("targets", {}))
             divines.update(data.get("divines", {}))
             bank_buy_pct = data.get("bank_buy_pct", DEFAULT_BANK_BUY_PCT)
-        st.write("Fetched item_settings OK!")
         return targets, divines, bank_buy_pct
     except Exception as e:
         st.error(f"Error connecting to Firestore: {e}")
@@ -237,7 +227,6 @@ def add_normal_deposit(user, admin_user, item, qty, value):
         st.error(f"Error adding deposit: {e}")
         return False
 
-# --- Deposit Deletion Helper ---
 def delete_deposit(user, deposit_id):
     if not FIREBASE_OK: return
     try:
@@ -248,7 +237,6 @@ def delete_deposit(user, deposit_id):
     except Exception as e:
         st.error(f"Failed to delete deposit: {e}")
 
-# --- OPTIMIZED: Batch fetch all user deposits as DataFrame ---
 @st.cache_data(ttl=20, show_spinner="Loading all deposits…")
 def get_all_deposits():
     if not FIREBASE_OK:
@@ -261,7 +249,7 @@ def get_all_deposits():
         for dep in deps:
             d = dep.to_dict()
             d["user"] = user_id
-            d["id"] = dep.id   # Include deposit Firestore doc ID!
+            d["id"] = dep.id
             all_deps.append(d)
     if not all_deps:
         return pd.DataFrame(columns=["user", "item", "qty", "timestamp", "value", "id"])
@@ -314,7 +302,6 @@ if ss('admin_logged', False):
 else:
     st.caption("**Read only mode** (progress & deposit info only)")
 
-# --- ADMIN PANEL: TOTALS + RESET ---
 if ss('admin_logged', False):
     st.header("🔑 Admin Panel Overview")
     norm_val, inst_val = get_admin_totals(ss('admin_user'))
@@ -335,7 +322,6 @@ if ss('admin_logged', False):
 
     st.markdown("---")
 
-    # --- ADMIN: ADD DEPOSIT/INSTANT SELL FORM ---
     st.subheader("Add Deposit or Instant Sell (admin-only)")
     user = st.text_input("User (for deposit, leave blank for instant sell)", key="deposit_user")
     col1, col2 = st.columns(2)
@@ -369,7 +355,6 @@ if ss('admin_logged', False):
 
     st.markdown("---")
 
-    # --- ITEM SETTINGS EDIT ---
     st.subheader("Edit Per-Item Targets, Values, Bank Buy %")
     targets, divines, bank_buy_pct = get_item_settings()
     with st.form("edit_targets_form"):
@@ -397,7 +382,6 @@ if ss('admin_logged', False):
             st.rerun()
     st.markdown("---")
 
-# --- USER DASHBOARD/OVERVIEW ---
 st.header("Deposits Overview")
 targets, divines, bank_buy_pct = get_item_settings()
 bank_buy_pct = bank_buy_pct or DEFAULT_BANK_BUY_PCT
@@ -484,8 +468,6 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
                     user_summary.style.format({"Fee (10%)": "{:.1f}", "Payout (Divines, after fee)": "{:.1f}"}),
                     use_container_width=True
                 )
-                
-                # ADMIN: Show individual deposits for this item, with delete button
                 if ss('admin_logged', False):
                     st.markdown("---")
                     st.write("**Individual Deposits (admin-only, with delete option):**")
@@ -505,7 +487,6 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
             else:
                 st.info("No deposits for this item.")
 
-# --- WHAT-IF CALCULATOR ---
 st.markdown("---")
 st.header("💡 What-If Calculator")
 st.write("Estimate your payout value for any combination of items and stack sizes!")
@@ -536,8 +517,6 @@ if st.button("Calculate Payout (What-If)"):
             payout_instant += qty * per_instant
     st.success(f"**Normal Deposit Value:** {payout_normal:.3f} Divines\n\n**Instant Sell Value:** {payout_instant:.3f} Divines")
 
-# --- ADMIN LOGS ---
 st.markdown("---")
 st.header("Admin Logs (last 30 actions)")
 show_admin_logs(30)
-

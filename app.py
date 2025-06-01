@@ -3,15 +3,31 @@ import pandas as pd
 import math
 import time
 from datetime import datetime
-import firebase_admin
-from firebase_admin import credentials, firestore
+
+# --- Try to import Firebase ---
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+    FIREBASE_AVAILABLE = True
+except Exception as e:
+    FIREBASE_AVAILABLE = False
+    st.error(f"Could not import firebase_admin: {e}")
 
 # --- FIREBASE INIT ---
 st.set_page_config(page_title="PoE Bulk Item Bank", layout="wide")
-if not firebase_admin._apps:
-    cred = credentials.Certificate(dict(st.secrets["firebase_json"]))
-    firebase_admin.initialize_app(cred)
-db = firestore.client()
+
+if FIREBASE_AVAILABLE:
+    try:
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(dict(st.secrets["firebase_json"]))
+            firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        FIREBASE_OK = True
+    except Exception as e:
+        st.error(f"Error initializing Firebase: {e}")
+        FIREBASE_OK = False
+else:
+    FIREBASE_OK = False
 
 # --- CONFIG ---
 ADMIN_USERS = ["Diablo", "JESUS", "LT"]
@@ -98,7 +114,11 @@ check_admin_timeout()
 
 @st.cache_data(ttl=20)
 def get_item_settings():
+    if not FIREBASE_OK:
+        st.error("Firestore not initialized. Check your credentials and internet connection.")
+        return ({item: 100 for item in ALL_ITEMS}, {item: 0.0 for item in ALL_ITEMS}, DEFAULT_BANK_BUY_PCT)
     try:
+        st.write("Connecting to Firestore for item settings...")
         settings_doc = db.collection("meta").document("item_settings").get()
         targets = {item: 100 for item in ALL_ITEMS}
         divines = {item: 0.0 for item in ALL_ITEMS}
@@ -108,11 +128,14 @@ def get_item_settings():
             targets.update(data.get("targets", {}))
             divines.update(data.get("divines", {}))
             bank_buy_pct = data.get("bank_buy_pct", DEFAULT_BANK_BUY_PCT)
+        st.write("Fetched item_settings OK!")
         return targets, divines, bank_buy_pct
-    except:
+    except Exception as e:
+        st.error(f"Error connecting to Firestore: {e}")
         return ({item: 100 for item in ALL_ITEMS}, {item: 0.0 for item in ALL_ITEMS}, DEFAULT_BANK_BUY_PCT)
 
 def save_item_settings(targets, divines, bank_buy_pct):
+    if not FIREBASE_OK: return
     try:
         db.collection("meta").document("item_settings").set({
             "targets": targets,
@@ -124,6 +147,7 @@ def save_item_settings(targets, divines, bank_buy_pct):
         st.error(f"Error saving settings: {e}")
 
 def log_admin(action, details=""):
+    if not FIREBASE_OK: return
     try:
         db.collection("admin_logs").add({
             "timestamp": datetime.utcnow(),
@@ -135,6 +159,7 @@ def log_admin(action, details=""):
         st.error(f"Error logging admin action: {e}")
 
 def show_admin_logs(n=30):
+    if not FIREBASE_OK: return
     try:
         logs_ref = db.collection("admin_logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(n).stream()
         logs = [l.to_dict() for l in logs_ref]
@@ -150,6 +175,7 @@ def show_admin_logs(n=30):
         st.error(f"Could not load logs: {e}")
 
 def get_admin_totals(admin_user):
+    if not FIREBASE_OK: return 0.0, 0.0
     doc = db.collection("admin_totals").document(admin_user).get()
     if doc.exists:
         data = doc.to_dict()
@@ -158,6 +184,7 @@ def get_admin_totals(admin_user):
         return 0.0, 0.0
 
 def update_admin_totals(admin_user, normal_add=0.0, instant_add=0.0):
+    if not FIREBASE_OK: return
     norm, inst = get_admin_totals(admin_user)
     db.collection("admin_totals").document(admin_user).set({
         "total_normal_value": norm + normal_add,
@@ -165,6 +192,7 @@ def update_admin_totals(admin_user, normal_add=0.0, instant_add=0.0):
     })
 
 def reset_admin_totals(admin_user):
+    if not FIREBASE_OK: return
     norm, inst = get_admin_totals(admin_user)
     db.collection("admin_totals").document(admin_user).set({
         "total_normal_value": 0.0,
@@ -173,6 +201,7 @@ def reset_admin_totals(admin_user):
     log_admin("Reset Totals", f"Admin: {admin_user} | Before Reset: Normal = {norm:.3f} Div, Instant = {inst:.3f} Div")
 
 def add_instant_sell(admin_user, item, qty, value):
+    if not FIREBASE_OK: return False
     try:
         doc_ref = db.collection("instant_sells").document(admin_user)
         doc_ref.collection("entries").add({
@@ -189,6 +218,7 @@ def add_instant_sell(admin_user, item, qty, value):
         return False
 
 def add_normal_deposit(user, admin_user, item, qty, value):
+    if not FIREBASE_OK: return False
     try:
         doc_ref = db.collection("users").document(user)
         doc_ref.set({}, merge=True)
@@ -207,9 +237,22 @@ def add_normal_deposit(user, admin_user, item, qty, value):
         st.error(f"Error adding deposit: {e}")
         return False
 
+# --- Deposit Deletion Helper ---
+def delete_deposit(user, deposit_id):
+    if not FIREBASE_OK: return
+    try:
+        db.collection("users").document(user).collection("deposits").document(deposit_id).delete()
+        log_admin("Deleted deposit", f"User: {user}, Deposit ID: {deposit_id}")
+        st.success("Deposit deleted!")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Failed to delete deposit: {e}")
+
 # --- OPTIMIZED: Batch fetch all user deposits as DataFrame ---
 @st.cache_data(ttl=20, show_spinner="Loading all deposits…")
 def get_all_deposits():
+    if not FIREBASE_OK:
+        return pd.DataFrame(columns=["user", "item", "qty", "timestamp", "value", "id"])
     users_ref = db.collection("users").stream()
     all_deps = []
     for u in users_ref:
@@ -218,12 +261,12 @@ def get_all_deposits():
         for dep in deps:
             d = dep.to_dict()
             d["user"] = user_id
+            d["id"] = dep.id   # Include deposit Firestore doc ID!
             all_deps.append(d)
     if not all_deps:
-        return pd.DataFrame(columns=["user", "item", "qty", "timestamp", "value"])
+        return pd.DataFrame(columns=["user", "item", "qty", "timestamp", "value", "id"])
     df = pd.DataFrame(all_deps)
-    # Defensive: Ensure columns
-    for col in ["user", "item", "qty", "timestamp", "value"]:
+    for col in ["user", "item", "qty", "timestamp", "value", "id"]:
         if col not in df.columns:
             df[col] = None
     if "timestamp" in df:
@@ -283,11 +326,10 @@ if ss('admin_logged', False):
     colB.metric("Instant Sells", f"{inst_val:.3f} Div")
     colC.metric("Combined Total", f"{combined_val:.3f} Div")
 
-    # FIX: Show message after rerun, not before!
     if st.button("⚠️ Reset My Admin Totals (no undo)"):
         reset_admin_totals(ss('admin_user'))
         st.session_state['show_reset_msg'] = f"Your admin totals have been reset. (Before reset → Normal: {norm_val:.3f} Div, Instant: {inst_val:.3f} Div)"
-        st.experimental_rerun()
+        st.rerun()
     if ss('show_reset_msg', None):
         st.success(st.session_state.pop('show_reset_msg'))
 
@@ -352,7 +394,7 @@ if ss('admin_logged', False):
         if st.form_submit_button("Save All Targets & Values"):
             save_item_settings(new_targets, new_divines, bank_buy_pct_new)
             st.success("Saved!")
-            st.experimental_rerun()
+            st.rerun()
     st.markdown("---")
 
 # --- USER DASHBOARD/OVERVIEW ---
@@ -442,6 +484,24 @@ for cat, items in ORIGINAL_ITEM_CATEGORIES.items():
                     user_summary.style.format({"Fee (10%)": "{:.1f}", "Payout (Divines, after fee)": "{:.1f}"}),
                     use_container_width=True
                 )
+                
+                # ADMIN: Show individual deposits for this item, with delete button
+                if ss('admin_logged', False):
+                    st.markdown("---")
+                    st.write("**Individual Deposits (admin-only, with delete option):**")
+                    for idx, row in item_df.sort_values(["user", "timestamp"]).iterrows():
+                        user = row["user"]
+                        qty = row.get("qty", 0)
+                        ts = row.get("timestamp", "")
+                        value = row.get("value", 0)
+                        deposit_id = row.get("id") or None
+                        cols = st.columns([2, 2, 2, 2, 1])
+                        cols[0].write(f"User: `{user}`")
+                        cols[1].write(f"Qty: `{qty}`")
+                        cols[2].write(f"Value: `{value:.2f} Div`")
+                        cols[3].write(f"Time: `{ts}`")
+                        if deposit_id and cols[4].button("Delete", key=f"del_{deposit_id}_{user}_{item}"):
+                            delete_deposit(user, deposit_id)
             else:
                 st.info("No deposits for this item.")
 
@@ -480,3 +540,4 @@ if st.button("Calculate Payout (What-If)"):
 st.markdown("---")
 st.header("Admin Logs (last 30 actions)")
 show_admin_logs(30)
+

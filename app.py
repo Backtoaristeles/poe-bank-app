@@ -262,6 +262,24 @@ def get_all_deposits():
     df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0).astype(int)
     return df
 
+# --------- NEW: DELETE ALL DEPOSITS FOR ITEM (ADMIN TOOL) ---------
+def delete_all_deposits_for_item(item):
+    if not FIREBASE_OK:
+        return
+    users_ref = db.collection("users").stream()
+    num_deleted = 0
+    for u in users_ref:
+        user_id = u.id
+        deps = db.collection("users").document(user_id).collection("deposits").stream()
+        for dep in deps:
+            d = dep.to_dict()
+            if d.get("item") == item:
+                db.collection("users").document(user_id).collection("deposits").document(dep.id).delete()
+                num_deleted += 1
+    log_admin("Deleted ALL deposits", f"Item: {item} | Deleted {num_deleted} deposits")
+    st.success(f"Deleted {num_deleted} deposits for item: {item}")
+    st.rerun()
+
 # --- LOGIN HANDLING ---
 col1, col2, col3 = st.columns([1,2,1])
 with col2:
@@ -302,6 +320,7 @@ if ss('admin_logged', False):
 else:
     st.caption("**Read only mode** (progress & deposit info only)")
 
+# ----------- ADMIN PANEL -------------
 if ss('admin_logged', False):
     st.header("🔑 Admin Panel Overview")
     norm_val, inst_val = get_admin_totals(ss('admin_user'))
@@ -380,6 +399,30 @@ if ss('admin_logged', False):
             save_item_settings(new_targets, new_divines, bank_buy_pct_new)
             st.success("Saved!")
             st.rerun()
+    st.markdown("---")
+
+    # ----------- DELETE ALL DEPOSITS ADMIN TOOL -------------
+    st.subheader("⚠️ Delete All Deposits For An Item (admin only)")
+    item_to_delete = st.selectbox(
+        "Select item to delete all deposits for:",
+        options=ALL_ITEMS,
+        key="delete_item_select"
+    )
+    if "pending_delete_item" not in st.session_state:
+        st.session_state["pending_delete_item"] = None
+
+    if st.button(f"Delete ALL deposits for [{item_to_delete}] (no undo)", key="delete_all_deps_btn"):
+        st.session_state["pending_delete_item"] = item_to_delete
+
+    if st.session_state.get("pending_delete_item"):
+        st.error(f"Confirm: Delete ALL deposits for [{st.session_state['pending_delete_item']}]?")
+        colD1, colD2 = st.columns(2)
+        if colD1.button("CONFIRM DELETE (NO UNDO)", key="confirm_delete_all_deps_btn"):
+            delete_all_deposits_for_item(st.session_state["pending_delete_item"])
+            st.session_state["pending_delete_item"] = None
+        if colD2.button("Cancel", key="cancel_delete_all_deps_btn"):
+            st.session_state["pending_delete_item"] = None
+
     st.markdown("---")
 
 st.header("Deposits Overview")

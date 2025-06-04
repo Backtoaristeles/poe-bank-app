@@ -4,9 +4,6 @@ import math
 import time
 from datetime import datetime
 
-# --- DEBUGGING SECRETS FORMAT ---
-st.write("Firebase Secret Type:", type(st.secrets["firebase_json"]))
-st.write("Firebase Secret Sample:", dict(list(st.secrets["firebase_json"].items())[:3]))  # Only print a sample
 
 # --- FIREBASE INIT ---
 try:
